@@ -79,7 +79,7 @@ const BASE = 'http://127.0.0.1:3000';
       searching: grab(/Searching for Hand\(s\)\.\.\./),
       handTracked: grab(/Hands Tracked: [^\n•]*/),
       fps: grab(/\d+ FPS/),
-      statusLine: grab(/(Initializing Dual-Hand Camera|Hand\(s\) Tracked|Multi-Hand Conflict|Analyzing|Holding|Confirmed|Searching for Hand|Vision Error)[^\n]*/),
+      statusLine: grab(/(Initializing Dual-Hand Camera|Hand\(s\) Tracked|Multi-Hand Conflict|Analyzing|Holding|Confirmed|Executed|Searching for Hand|Vision Error)[^\n]*/),
       cameraReady: /READY/i.test(text),
       diagPanel: (document.querySelector('[data-testid="amap-runtime-diagnostics"]')?.textContent || 'PANEL NOT FOUND').replace(/\s+/g, ' ').trim(),
     };

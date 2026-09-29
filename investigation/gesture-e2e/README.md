@@ -5,8 +5,11 @@ real Chromium + real @mediapipe/tasks-vision WASM + the real /worker page, with
 `--use-file-for-fake-video-capture` feeding a Y4M video built from a real hand
 photo as the "webcam".
 
-## Verified with this harness (2026-09-29, extended-diagnostics build)
-Panel = `[data-testid="amap-runtime-diagnostics"]` (rendered above the camera).
+## Verified with this harness (2026-09-29)
+Panel = `[data-testid="amap-runtime-diagnostics"]` — REMOVED from the product
+in the Phase 1 cleanup; the harness now reports `PANEL NOT FOUND`, which is the
+verification that the diagnostics are gone. Gesture-chain verification uses the
+PRODUCTION UI: `handTracked` + `statusLine` ("Executed • Release Hand").
 - open_palm feed, GPU path -> panel: `raw hands count 1 • first raw hand LMs 21
   • palm 0.187 (floor 0.035) • vis 0/21 reported avg n/a • accepted hands
   count 1 • last gesture OPEN_PALM (89%) • pipeline WAIT_FOR_RELEASE, hand
