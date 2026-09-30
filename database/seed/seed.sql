@@ -1468,3 +1468,57 @@ VALUES
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     )
 ON CONFLICT (worker_profile_id) DO NOTHING;
+
+-- ============================================================================
+-- 19. Dataset Expansion (Phase 7) — industry-appropriate record types
+-- Completes each organization's dataset so it covers its industry categories:
+-- MediCare appointments / clinical workflow / review records; Nexa account /
+-- risk-review records; LogiCore order / inventory / logistics records;
+-- BrightGrid service / infrastructure records. (Acme already covers
+-- production / inspection / maintenance / incidents in section 17b.)
+-- All data is synthetic sample data. Deterministic IDs, idempotent.
+-- ============================================================================
+
+INSERT INTO dataset_records (id, dataset_id, organization_id, record_type, title, source_ref, payload, occurred_at, related_record_id)
+VALUES
+    -- MediCare Health Systems (appointments / clinical workflow / reviews)
+    ('bb200000-0000-0000-0000-000000000006', 'ba200000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000002', 'appointment', 'Follow-Up Appointment — Bed 7 Post-Op Review', 'APT-B7-0930',
+     '{"clinic": "Ward 4 (sample)", "scheduled_for": "2026-09-30 10:30", "purpose": "post-operative wound review", "status": "scheduled", "attending": "Dr. M. Osei (sample)"}'::jsonb,
+     '2026-09-29 08:15:00+00', 'bb200000-0000-0000-0000-000000000001'),
+    ('bb200000-0000-0000-0000-000000000007', 'ba200000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000002', 'clinical_review', 'Physician Case Review — Post-Op Day 2', 'REV-B7-002',
+     '{"reviewer": "Dr. M. Osei (sample)", "findings": "wound site erythema; vitals trend consistent with early infectious process", "actions": "blood cultures ordered; antibiotics under review", "status": "open"}'::jsonb,
+     '2026-09-29 07:40:00+00', 'bb200000-0000-0000-0000-000000000004'),
+    ('bb200000-0000-0000-0000-000000000008', 'ba200000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000002', 'medication_reconciliation', 'Pharmacy Reconciliation — Bed 7', 'PHARM-REC-0929',
+     '{"pharmacist": "Pharmacist L-3 (sample)", "discrepancies": 1, "detail": "analgesic dose on MAR differs from discharge order by 25%", "status": "resolved_with_change"}'::jsonb,
+     '2026-09-29 05:20:00+00', 'bb200000-0000-0000-0000-000000000002'),
+    -- Nexa Finance (account / risk review / contact)
+    ('bb300000-0000-0000-0000-000000000006', 'ba300000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000003', 'account', 'Account Summary — NXC-4471', 'NXC-4471-ACCT',
+     '{"account_type": "personal_checking", "opened": "2019-04-12", "status": "active", "card": "issued_2024", "monthly_limit_usd": 8000}'::jsonb,
+     '2026-09-01 00:00:00+00', 'bb300000-0000-0000-0000-000000000004'),
+    ('bb300000-0000-0000-0000-000000000007', 'ba300000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000003', 'risk_review', 'AML Alert Review Case AML-2026-1187', 'AML-2026-1187',
+     '{"analyst": "Analyst R-9 (sample)", "trigger": "velocity_geo_mismatch", "stage": "pending_decision", "sarl_filed": false, "deadline": "2026-10-03"}'::jsonb,
+     '2026-09-29 09:05:00+00', 'bb300000-0000-0000-0000-000000000003'),
+    ('bb300000-0000-0000-0000-000000000008', 'ba300000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000003', 'customer_contact_log', 'Customer Contact Attempt — NXC-4471', 'CONTACT-4471-01',
+     '{"channel": "phone", "attempt": 1, "outcome": "no_answer", "next_step": "retry, then letter"}'::jsonb,
+     '2026-09-29 10:30:00+00', 'bb300000-0000-0000-0000-000000000004'),
+    -- LogiCore Logistics (order / inventory / carrier operations)
+    ('bb400000-0000-0000-0000-000000000006', 'ba400000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000004', 'customer_order', 'Customer Order ORD-55219 (Düsseldorf)', 'ORD-55219',
+     '{"customer": "Sample Industrial Components GmbH", "items": 42, "value_eur": 31250, "promised_window": "2026-09-29 08:00-12:00", "priority": "standard"}'::jsonb,
+     '2026-09-28 16:45:00+00', 'bb400000-0000-0000-0000-000000000001'),
+    ('bb400000-0000-0000-0000-000000000007', 'ba400000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000004', 'inventory_snapshot', 'Dock 4 Inventory Snapshot — Bearings', 'INV-D4-0929',
+     '{"sku": "BRG-6206-2RS", "on_hand": 180, "allocated": 140, "discrepancy": "20 units unaccounted after resequencing", "cycle_count_due": true}'::jsonb,
+     '2026-09-29 06:00:00+00', 'bb400000-0000-0000-0000-000000000005'),
+    ('bb400000-0000-0000-0000-000000000008', 'ba400000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000004', 'carrier_schedule', 'Carrier Schedule Slot — Dock 4 Morning Block', 'SCH-D4-AM',
+     '{"slot": "04:00-06:30", "carrier": "Sample Carrier NL-2", "loads": 3, "note": "loads resequenced due to congestion"}'::jsonb,
+     '2026-09-29 04:00:00+00', 'bb400000-0000-0000-0000-000000000003'),
+    -- BrightGrid Energy (service tickets / infrastructure assets / field ops)
+    ('bb500000-0000-0000-0000-000000000006', 'ba500000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000005', 'service_ticket', 'Customer Service Ticket ST-8871 — Feeder F-12 Outage', 'ST-8871',
+     '{"customer": "Sample Distribution Customer #4471", "reported_symptom": "repeated brief power interruptions", "opened": "2026-09-29 05:02", "status": "open_investigating"}'::jsonb,
+     '2026-09-29 05:02:00+00', 'bb500000-0000-0000-0000-000000000003'),
+    ('bb500000-0000-0000-0000-000000000007', 'ba500000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000005', 'infrastructure_asset', 'Asset Registry — Transformer T-F12', 'ASSET-T-F12',
+     '{"asset": "33/11 kV distribution transformer", "installed": "2011-06-20", "rated_kva": 15000, "last_major_service": "2026-09-15", "condition": "monitor"}'::jsonb,
+     '2026-09-15 09:00:00+00', 'bb500000-0000-0000-0000-000000000004'),
+    ('bb500000-0000-0000-0000-000000000008', 'ba500000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000005', 'field_crew_dispatch', 'Field Crew Dispatch — Crew E-2 to Substation F-12', 'DSP-E2-0929',
+     '{"crew": "E-2 (sample)", "dispatched_to": "Substation F-12", "eta_min": 35, "tasks": ["thermal scan", "tap changer inspection"], "status": "en_route"}'::jsonb,
+     '2026-09-29 05:15:00+00', 'bb500000-0000-0000-0000-000000000001')
+ON CONFLICT (id) DO NOTHING;

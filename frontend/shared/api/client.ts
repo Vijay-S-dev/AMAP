@@ -829,6 +829,24 @@ class ApiClient {
     return await this.request<any[]>('/organizations/manage/departments');
   }
 
+  async getOrgDatasets(): Promise<any[]> {
+    return await this.request<any[]>('/organizations/manage/datasets');
+  }
+
+  async getOrgDatasetRecords(
+    datasetId: string,
+    params: { record_type?: string; page?: number; page_size?: number } = {}
+  ): Promise<any> {
+    const query = new URLSearchParams();
+    if (params.record_type) query.set('record_type', params.record_type);
+    if (params.page) query.set('page', String(params.page));
+    if (params.page_size) query.set('page_size', String(params.page_size));
+    const qs = query.toString();
+    return await this.request(
+      `/organizations/manage/datasets/${datasetId}/records${qs ? `?${qs}` : ''}`
+    );
+  }
+
   async createOrgDepartment(payload: { name: string; status?: string }): Promise<any> {
     return await this.request('/organizations/manage/departments', {
       method: 'POST',

@@ -264,3 +264,32 @@ class OrganizationAuditEventItem(AMAPBaseModel):
     resource_id: Optional[UUID] = None
     occurred_at: datetime
     event_data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DatasetItem(AMAPBaseModel):
+    """An organization-owned dataset with aggregate record statistics."""
+    id: UUID
+    organization_id: UUID
+    name: str
+    description: Optional[str] = None
+    domain: str
+    status: str
+    record_count: int = 0
+    record_types: List[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class DatasetRecordItem(AMAPBaseModel):
+    """A typed record inside an organization-owned dataset."""
+    id: UUID
+    dataset_id: UUID
+    organization_id: UUID
+    record_type: str
+    title: str
+    source_ref: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    occurred_at: Optional[datetime] = None
+    related_record_id: Optional[UUID] = None
+    created_at: datetime
+    updated_at: datetime

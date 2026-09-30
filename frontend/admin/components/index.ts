@@ -1,5 +1,6 @@
 export * from './OrganizationOverviewPanel';
 export * from './DepartmentManagementPanel';
+export * from './DatasetManagementPanel';
 export * from './SupervisorManagementPanel';
 export * from './WorkerManagementPanel';
 export * from './EnterpriseWorkflowManager';

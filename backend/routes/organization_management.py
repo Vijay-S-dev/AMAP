@@ -20,6 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.dependencies import require_roles
 from models.auth import AuthenticatedUserContext
 from models.enterprise_organization import (
+    DatasetItem,
+    DatasetRecordItem,
     DepartmentCreatePayload,
     DepartmentItem,
     DepartmentUpdatePayload,
@@ -485,3 +487,48 @@ def query_audit_logs(
 ) -> List[OrganizationAuditEventItem]:
     """Query immutable audit events for the organization."""
     return service.query_audit_logs(organization_id=admin_user.organization_id, limit=limit)
+
+
+# =====================================================================
+# 9. Organization-Owned Datasets & Records (Phase 7)
+# =====================================================================
+
+@router.get(
+    "/datasets",
+    response_model=List[DatasetItem],
+    status_code=status.HTTP_200_OK,
+    summary="List the organization's datasets with record statistics",
+)
+def list_datasets(
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
+    service: OrganizationManagementService = Depends(get_org_management_service),
+) -> List[DatasetItem]:
+    """List organization-owned datasets (server-side scoped to the caller's organization)."""
+    return service.list_datasets(organization_id=admin_user.organization_id)
+
+
+@router.get(
+    "/datasets/{dataset_id}/records",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    summary="List records in one of the organization's datasets",
+)
+def list_dataset_records(
+    dataset_id: UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    record_type: Optional[str] = Query(None),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
+    service: OrganizationManagementService = Depends(get_org_management_service),
+) -> Dict[str, Any]:
+    """List typed records inside an organization-owned dataset (cross-org access is a 404)."""
+    try:
+        return service.list_dataset_records(
+            dataset_id=dataset_id,
+            organization_id=admin_user.organization_id,
+            page=page,
+            page_size=page_size,
+            record_type=record_type,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

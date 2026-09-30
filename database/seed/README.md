@@ -81,10 +81,18 @@ to the dataset, the organization, and — where meaningful — a related record)
 | Organization | Dataset | Records | Record types |
 |---|---|---|---|
 | Acme Motors | Powertrain Quality Tracer — Line 3 | 13 | production, inspection, maintenance, supply_chain, incident |
-| MediCare Health Systems | Ward 4 Post-Operative Monitoring File | 5 | patient_vitals, medication_administration, lab_result, nursing_note, shift_handover |
-| Nexa Finance | Card Dispute & Fraud Alert File — NXC-4471 | 5 | transaction, fraud_alert, customer_profile, merchant_note |
-| LogiCore Logistics | Route 7 Exception File — Rotterdam Hub | 5 | shipment, scan_event, delay_incident, driver_report |
-| BrightGrid Energy | Substation F-12 Feeder Monitoring File | 5 | sensor_reading, outage_ticket, maintenance_log, scada_alarm |
+| MediCare Health Systems | Ward 4 Post-Operative Monitoring File | 8 | patient_vitals, medication_administration, lab_result, nursing_note, shift_handover, appointment, clinical_review, medication_reconciliation |
+| Nexa Finance | Card Dispute & Fraud Alert File — NXC-4471 | 8 | transaction, fraud_alert, customer_profile, merchant_note, account, risk_review, customer_contact_log |
+| LogiCore Logistics | Route 7 Exception File — Rotterdam Hub | 8 | shipment, scan_event, delay_incident, driver_report, customer_order, inventory_snapshot, carrier_schedule |
+| BrightGrid Energy | Substation F-12 Feeder Monitoring File | 8 | sensor_reading, outage_ticket, maintenance_log, scada_alarm, service_ticket, infrastructure_asset, field_crew_dispatch |
+
+Datasets are organization-owned and server-side scoped: admins can browse
+their organization's datasets and records through
+`GET /api/v1/organizations/manage/datasets` and
+`GET /api/v1/organizations/manage/datasets/{id}/records` (Admin Studio →
+Datasets tab). Cross-organization dataset access returns 404; workers and
+supervisors do not have access to the management endpoints (workers see
+their task's evidence through the task APIs).
 
 ## Seeded worker tasks (linked to the datasets above)
 

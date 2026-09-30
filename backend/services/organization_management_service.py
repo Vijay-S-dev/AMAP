@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from models.enterprise_organization import (
+    DatasetItem,
+    DatasetRecordItem,
     DepartmentCreatePayload,
     DepartmentItem,
     DepartmentUpdatePayload,
@@ -36,6 +38,7 @@ from psycopg import errors
 
 from repositories.assistance_requests import AssistanceRequestsRepository
 from repositories.audit_events import AuditEventsRepository
+from repositories.datasets import DatasetsRepository
 from repositories.departments import DepartmentsRepository
 from repositories.organizations import OrganizationsRepository
 from repositories.tasks import TasksRepository
@@ -71,6 +74,7 @@ class OrganizationManagementService:
         roles_repo: Optional[RolesRepository] = None,
         user_roles_repo: Optional[UserRolesRepository] = None,
         worker_readiness_repo: Optional[WorkerReadinessRepository] = None,
+        datasets_repo: Optional[DatasetsRepository] = None,
     ) -> None:
         self.orgs_repo = orgs_repo or OrganizationsRepository()
         self.depts_repo = depts_repo or DepartmentsRepository()
@@ -86,6 +90,7 @@ class OrganizationManagementService:
         self.roles_repo = roles_repo or RolesRepository()
         self.user_roles_repo = user_roles_repo or UserRolesRepository()
         self.worker_readiness_repo = worker_readiness_repo or WorkerReadinessRepository()
+        self.datasets_repo = datasets_repo or DatasetsRepository()
 
     # =========================================================================
     # 1. Organization Dashboard KPIs (§ 5, § 34)
@@ -1322,3 +1327,81 @@ class OrganizationManagementService:
                 )
             )
         return items
+
+    # =========================================================================
+    # 9. Organization-Owned Datasets & Records (Phase 7)
+    # =========================================================================
+
+    def list_datasets(self, organization_id: UUID) -> List[DatasetItem]:
+        """
+        List the organization's own datasets with real record counts and the
+        record types present. Strictly organization-scoped (server-side).
+        """
+        rows = self.datasets_repo.list_by_organization(organization_id)
+        return [
+            DatasetItem(
+                id=r["id"],
+                organization_id=r["organization_id"],
+                name=r["name"],
+                description=r.get("description"),
+                domain=r.get("domain") or "general",
+                status=r.get("status") or "active",
+                record_count=int(r.get("record_count") or 0),
+                record_types=sorted(r.get("record_types") or []),
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+            )
+            for r in rows
+        ]
+
+    def list_dataset_records(
+        self,
+        dataset_id: UUID,
+        organization_id: UUID,
+        page: int = 1,
+        page_size: int = 25,
+        record_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        List records inside one of the organization's own datasets with
+        pagination and an optional record-type filter. A dataset belonging to
+        another organization is indistinguishable from a missing one (404).
+        """
+        dataset = self.datasets_repo.get_by_id(dataset_id)
+        if not dataset or dataset["organization_id"] != organization_id:
+            raise NotFoundError(f"Dataset {dataset_id} not found in your organization.")
+
+        rows, total = self.datasets_repo.list_records(
+            dataset_id=dataset_id,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+            record_type=record_type,
+        )
+        items = [
+            DatasetRecordItem(
+                id=r["id"],
+                dataset_id=r["dataset_id"],
+                organization_id=r["organization_id"],
+                record_type=r["record_type"],
+                title=r["title"],
+                source_ref=r.get("source_ref"),
+                payload=r.get("payload") or {},
+                occurred_at=r.get("occurred_at"),
+                related_record_id=r.get("related_record_id"),
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+            )
+            for r in rows
+        ]
+        return {
+            "dataset": {
+                "id": str(dataset["id"]),
+                "name": dataset["name"],
+                "domain": dataset.get("domain") or "general",
+                "status": dataset.get("status") or "active",
+            },
+            "items": items,
+            "total_count": total,
+            "page": page,
+            "page_size": page_size,
+        }
