@@ -1171,8 +1171,11 @@ VALUES
     ),
     -- MediCare Health Systems
     ('ce200000-0000-0000-0000-000000000001',
-        TRUE, FALSE, 'incomplete', 'multimodal', FALSE, FALSE, FALSE, FALSE, FALSE,
-        '[]'::jsonb,
+        -- worker1 is a CERTIFIED worker (same readiness shape as Acme's
+        -- alex.worker) so the org's worker journey demo starts at /worker;
+        -- remaining workers stay fresher/incomplete for onboarding demos.
+        FALSE, TRUE, 'ready', 'multimodal', TRUE, TRUE, TRUE, TRUE, TRUE,
+        '["language", "accessibility", "gesture_calibration", "voice_setup", "training"]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ce200000-0000-0000-0000-000000000002',
@@ -1236,8 +1239,10 @@ VALUES
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ad200000-0000-0000-0000-000000000001',
-        TRUE, FALSE, 'incomplete', 'multimodal', FALSE, FALSE, FALSE, FALSE, FALSE,
-        '[]'::jsonb,
+        -- worker1 login profile (ad*): CERTIFIED so the worker journey demo
+        -- starts directly at /worker (matches Acme's alex.worker).
+        FALSE, TRUE, 'ready', 'multimodal', TRUE, TRUE, TRUE, TRUE, TRUE,
+        '["language", "accessibility", "gesture_calibration", "voice_setup", "training"]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ad200000-0000-0000-0000-000000000002',
@@ -1252,8 +1257,11 @@ VALUES
     ),
     -- Nexa Finance
     ('ce300000-0000-0000-0000-000000000001',
-        TRUE, FALSE, 'incomplete', 'multimodal', FALSE, FALSE, FALSE, FALSE, FALSE,
-        '[]'::jsonb,
+        -- worker1 is a CERTIFIED worker (same readiness shape as Acme's
+        -- alex.worker) so the org's worker journey demo starts at /worker;
+        -- remaining workers stay fresher/incomplete for onboarding demos.
+        FALSE, TRUE, 'ready', 'multimodal', TRUE, TRUE, TRUE, TRUE, TRUE,
+        '["language", "accessibility", "gesture_calibration", "voice_setup", "training"]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ce300000-0000-0000-0000-000000000002',
@@ -1317,8 +1325,10 @@ VALUES
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ad300000-0000-0000-0000-000000000001',
-        TRUE, FALSE, 'incomplete', 'multimodal', FALSE, FALSE, FALSE, FALSE, FALSE,
-        '[]'::jsonb,
+        -- worker1 login profile (ad*): CERTIFIED so the worker journey demo
+        -- starts directly at /worker (matches Acme's alex.worker).
+        FALSE, TRUE, 'ready', 'multimodal', TRUE, TRUE, TRUE, TRUE, TRUE,
+        '["language", "accessibility", "gesture_calibration", "voice_setup", "training"]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ad300000-0000-0000-0000-000000000002',
@@ -1333,8 +1343,11 @@ VALUES
     ),
     -- LogiCore Logistics
     ('ce400000-0000-0000-0000-000000000001',
-        TRUE, FALSE, 'incomplete', 'multimodal', FALSE, FALSE, FALSE, FALSE, FALSE,
-        '[]'::jsonb,
+        -- worker1 is a CERTIFIED worker (same readiness shape as Acme's
+        -- alex.worker) so the org's worker journey demo starts at /worker;
+        -- remaining workers stay fresher/incomplete for onboarding demos.
+        FALSE, TRUE, 'ready', 'multimodal', TRUE, TRUE, TRUE, TRUE, TRUE,
+        '["language", "accessibility", "gesture_calibration", "voice_setup", "training"]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ce400000-0000-0000-0000-000000000002',
@@ -1398,8 +1411,10 @@ VALUES
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ad400000-0000-0000-0000-000000000001',
-        TRUE, FALSE, 'incomplete', 'multimodal', FALSE, FALSE, FALSE, FALSE, FALSE,
-        '[]'::jsonb,
+        -- worker1 login profile (ad*): CERTIFIED so the worker journey demo
+        -- starts directly at /worker (matches Acme's alex.worker).
+        FALSE, TRUE, 'ready', 'multimodal', TRUE, TRUE, TRUE, TRUE, TRUE,
+        '["language", "accessibility", "gesture_calibration", "voice_setup", "training"]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ad400000-0000-0000-0000-000000000002',
@@ -1414,8 +1429,11 @@ VALUES
     ),
     -- BrightGrid Energy
     ('ce500000-0000-0000-0000-000000000001',
-        TRUE, FALSE, 'incomplete', 'multimodal', FALSE, FALSE, FALSE, FALSE, FALSE,
-        '[]'::jsonb,
+        -- worker1 is a CERTIFIED worker (same readiness shape as Acme's
+        -- alex.worker) so the org's worker journey demo starts at /worker;
+        -- remaining workers stay fresher/incomplete for onboarding demos.
+        FALSE, TRUE, 'ready', 'multimodal', TRUE, TRUE, TRUE, TRUE, TRUE,
+        '["language", "accessibility", "gesture_calibration", "voice_setup", "training"]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ce500000-0000-0000-0000-000000000002',
@@ -1479,8 +1497,10 @@ VALUES
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ad500000-0000-0000-0000-000000000001',
-        TRUE, FALSE, 'incomplete', 'multimodal', FALSE, FALSE, FALSE, FALSE, FALSE,
-        '[]'::jsonb,
+        -- worker1 login profile (ad*): CERTIFIED so the worker journey demo
+        -- starts directly at /worker (matches Acme's alex.worker).
+        FALSE, TRUE, 'ready', 'multimodal', TRUE, TRUE, TRUE, TRUE, TRUE,
+        '["language", "accessibility", "gesture_calibration", "voice_setup", "training"]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     ),
     ('ad500000-0000-0000-0000-000000000002',
@@ -1493,7 +1513,17 @@ VALUES
         '[]'::jsonb,
         '{"language": "en", "modality": "multimodal", "dwell_time_ms": 500, "high_contrast": false, "text_scale": 1.0}'::jsonb
     )
-ON CONFLICT (worker_profile_id) DO NOTHING;
+ON CONFLICT (worker_profile_id) DO UPDATE SET
+    is_fresher = EXCLUDED.is_fresher,
+    onboarding_completed = EXCLUDED.onboarding_completed,
+    readiness_status = EXCLUDED.readiness_status,
+    interaction_mode = EXCLUDED.interaction_mode,
+    gesture_ready = EXCLUDED.gesture_ready,
+    voice_ready = EXCLUDED.voice_ready,
+    multimodal_ready = EXCLUDED.multimodal_ready,
+    task_training_complete = EXCLUDED.task_training_complete,
+    overall_ready = EXCLUDED.overall_ready,
+    completed_stages = EXCLUDED.completed_stages;
 
 -- ============================================================================
 -- 19. Dataset Expansion (Phase 7) — industry-appropriate record types

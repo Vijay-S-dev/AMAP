@@ -245,6 +245,35 @@ function LoginForm() {
 
           <div>
             <label
+              htmlFor="org-select"
+              style={{ display: 'block', fontSize: '0.95rem', fontWeight: 700, marginBottom: '0.4rem', color: 'var(--text-primary)' }}
+            >
+              Organization
+            </label>
+            <select
+              id="org-select"
+              value={organizationId}
+              onChange={(e) => setOrganizationId(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '0.75rem 1rem',
+                borderRadius: '12px',
+                border: '1px solid var(--border-color)',
+                background: 'rgba(255, 255, 255, 0.06)',
+                color: 'var(--text-primary)',
+                fontSize: '0.95rem',
+              }}
+            >
+              <option value="9a61e05d-7a32-4112-9c17-1833d7b42f65">Acme Motors — Assembly Plant 1</option>
+              <option value="aa100000-0000-0000-0000-000000000002">MediCare Health Systems</option>
+              <option value="aa100000-0000-0000-0000-000000000003">Nexa Finance</option>
+              <option value="aa100000-0000-0000-0000-000000000004">LogiCore Logistics</option>
+              <option value="aa100000-0000-0000-0000-000000000005">BrightGrid Energy</option>
+            </select>
+          </div>
+
+          <div>
+            <label
               htmlFor="email-input"
               style={{ display: 'block', fontSize: '0.95rem', fontWeight: 700, marginBottom: '0.4rem', color: 'var(--text-primary)' }}
             >
