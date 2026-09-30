@@ -962,6 +962,13 @@ class ApiClient {
     });
   }
 
+  async updateOrgWorkflow(workflowId: string, payload: any): Promise<any> {
+    return await this.request(`/organizations/manage/workflows/${workflowId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async getOrgAssistanceOverview(): Promise<any[]> {
     return await this.request<any[]>('/organizations/manage/assistance');
   }

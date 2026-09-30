@@ -10,6 +10,9 @@ export function EnterpriseWorkflowManager() {
   const [departments, setDepartments] = useState<any[]>([]);
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  /** When set, the modal edits this workflow instead of creating a new one. */
+  const [editingWorkflow, setEditingWorkflow] = useState<any | null>(null);
+  const [editStatus, setEditStatus] = useState('active');
 
   // New Workflow State
   const [name, setName] = useState('');
@@ -57,27 +60,75 @@ export function EnterpriseWorkflowManager() {
     setSteps(steps.filter((_, i) => i !== index));
   };
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const DEFAULT_STEPS = [
+    { title: 'Optical Component Check', instruction: 'Inspect component orientation on fixture bed.', is_safety_critical: false },
+    { title: 'Fastener Torquing', instruction: 'Torque M6 bolts to specification in star sequence.', is_safety_critical: false },
+  ];
+
+  const openCreateModal = () => {
+    setEditingWorkflow(null);
+    setEditStatus('active');
+    setName('');
+    setDescription('');
+    setDuration(15.0);
+    setSteps(DEFAULT_STEPS.map((s) => ({ ...s })));
+    setShowCreateModal(true);
+  };
+
+  const openEditModal = (wf: any) => {
+    setEditingWorkflow(wf);
+    setEditStatus(wf.status || 'active');
+    setName(wf.name || '');
+    setDescription(wf.description || '');
+    setDuration(wf.estimated_duration_minutes || 15.0);
+    setDepartmentId(wf.department_id || '');
+    setSteps(
+      (wf.steps || []).map((s: any) => ({
+        title: s.title || '',
+        instruction: s.instruction || '',
+        is_safety_critical: Boolean(s.is_safety_critical),
+      }))
+    );
+    setShowCreateModal(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
     setIsSubmitting(true);
     try {
-      await api.createOrgWorkflow({
-        name: name.trim(),
-        description: description.trim(),
-        department_id: departmentId || undefined,
-        estimated_duration_minutes: duration,
-        steps,
-      });
-      announce(`Workflow ${name} successfully configured and published.`);
+      if (editingWorkflow) {
+        // Update the existing definition (PostgreSQL, org-scoped; the
+        // backend bumps the version and records an audit event).
+        const updated = await api.updateOrgWorkflow(editingWorkflow.id, {
+          name: name.trim(),
+          description: description.trim() || undefined,
+          department_id: departmentId || undefined,
+          status: editStatus,
+          steps,
+        });
+        announce(
+          `Workflow ${name} updated to version ${updated?.version || 'new'}. Changes persisted to PostgreSQL.`
+        );
+      } else {
+        await api.createOrgWorkflow({
+          name: name.trim(),
+          description: description.trim(),
+          department_id: departmentId || undefined,
+          estimated_duration_minutes: duration,
+          steps,
+        });
+        announce(`Workflow ${name} successfully configured and published.`);
+      }
       playAudioCue('confirm');
       setName('');
       setDescription('');
+      setEditingWorkflow(null);
       setShowCreateModal(false);
       loadData();
-    } catch {
-      announce('Failed to create workflow template.');
+    } catch (err: any) {
+      announce(`Failed to ${editingWorkflow ? 'update' : 'create'} workflow: ${err?.message || 'server error'}`);
       playAudioCue('alert');
     } finally {
       setIsSubmitting(false);
@@ -98,7 +149,7 @@ export function EnterpriseWorkflowManager() {
         <button
           type="button"
           className="btn btn-primary"
-          onClick={() => setShowCreateModal(true)}
+          onClick={() => openCreateModal()}
           style={{ minHeight: '48px', padding: '0 1.25rem', background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)' }}
         >
           ➕ Define Workflow
@@ -157,10 +208,23 @@ export function EnterpriseWorkflowManager() {
         {selectedWorkflow && (
           <div className="glass-panel" style={{ padding: '1.75rem', borderRadius: '20px', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             <div>
-              <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#a78bfa', fontWeight: 700 }}>
-                {selectedWorkflow.department_name || 'Assembly Line'}
-              </span>
-              <h3 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '0.2rem' }}>{selectedWorkflow.name}</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem' }}>
+                <div>
+                  <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#a78bfa', fontWeight: 700 }}>
+                    {selectedWorkflow.department_name || 'Assembly Line'}
+                  </span>
+                  <h3 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '0.2rem' }}>{selectedWorkflow.name}</h3>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => openEditModal(selectedWorkflow)}
+                  aria-label={`Edit workflow ${selectedWorkflow.name}`}
+                  style={{ minHeight: '44px', padding: '0 1rem', fontSize: '0.85rem', flexShrink: 0 }}
+                >
+                  ✏️ Edit Definition
+                </button>
+              </div>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
                 {selectedWorkflow.description}
               </p>
@@ -220,13 +284,33 @@ export function EnterpriseWorkflowManager() {
         >
           <div className="glass-panel" style={{ width: '100%', maxWidth: '640px', maxHeight: '90vh', overflowY: 'auto', padding: '2rem', borderRadius: '24px' }}>
             <h3 id="wf-modal-title" style={{ fontSize: '1.3rem', fontWeight: 800, marginBottom: '0.5rem' }}>
-              ➕ Define Workflow Template
+              {editingWorkflow ? `✏️ Edit Workflow — ${editingWorkflow.name} (v${editingWorkflow.version || 1})` : '➕ Define Workflow Template'}
             </h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
-              Configure a standard industrial procedure with multimodal operator guidance.
+              {editingWorkflow
+                ? 'Modify the definition and step sequence. Saving bumps the workflow version and records an audit event (PostgreSQL).'
+                : 'Configure a standard industrial procedure with multimodal operator guidance.'}
             </p>
 
-            <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            {editingWorkflow && (
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                  Status
+                </label>
+                <select
+                  className="input-field"
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  style={{ width: '100%', minHeight: '48px' }}
+                >
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.35rem' }}>
                   Workflow Name
@@ -343,7 +427,7 @@ export function EnterpriseWorkflowManager() {
                   disabled={isSubmitting}
                   style={{ minHeight: '48px', padding: '0 1.5rem', background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)' }}
                 >
-                  {isSubmitting ? 'Publishing...' : 'Publish Workflow'}
+                  {isSubmitting ? 'Saving...' : editingWorkflow ? 'Save Changes' : 'Publish Workflow'}
                 </button>
               </div>
             </form>
