@@ -49,6 +49,9 @@ REGISTERED_AMAP_ACTIONS = {
     "start_assignment",
     "complete_step",
     "finish_assignment",
+    # Evidence inspection (UI-only toggles; worker workstation)
+    "show_evidence",
+    "hide_evidence",
 }
 
 # Gesture poses whose action may target an on-screen element at the

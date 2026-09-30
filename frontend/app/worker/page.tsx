@@ -107,6 +107,8 @@ export default function WorkerPage() {
   /** Worker classification for investigation tasks (persisted with the result). */
   const [decisionSelection, setDecisionSelection] = useState<string | null>(null);
   const [showEvidence, setShowEvidence] = useState<boolean>(false);
+  /** Record-type filter for the investigation evidence list (null = all). */
+  const [evidenceFilter, setEvidenceFilter] = useState<string | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState<number>(0);
   const [completedStepIds, setCompletedStepIds] = useState<Set<string>>(new Set());
   const [installedParts, setInstalledParts] = useState<Record<string, string>>({});
@@ -866,6 +868,19 @@ export default function WorkerPage() {
         } else {
           setStatusMessage('⚠️ No element under the pointer to select.');
         }
+        return;
+      }
+      case 'show_evidence': {
+        setShowEvidence(true);
+        setStatusMessage('🔍 Evidence records shown.');
+        announce('Evidence records shown.');
+        playAudioCue('step');
+        return;
+      }
+      case 'hide_evidence': {
+        setShowEvidence(false);
+        setStatusMessage('Evidence records hidden.');
+        announce('Evidence records hidden.');
         return;
       }
       case 'scroll_up':
@@ -1774,7 +1789,85 @@ export default function WorkerPage() {
               </p>
               {showEvidence && (
                 <div id="task-evidence-list" style={{ display: 'grid', gap: '0.75rem', marginTop: '1rem' }}>
-                  {task.evidence!.map((rec: any) => (
+                  {(() => {
+                    const allEvidence = task.evidence!;
+                    const types = Array.from(
+                      new Set(allEvidence.map((r: any) => r.record_type).filter(Boolean))
+                    ) as string[];
+                    const visible = evidenceFilter
+                      ? allEvidence.filter((r: any) => r.record_type === evidenceFilter)
+                      : allEvidence;
+                    return (
+                      <>
+                        {types.length > 1 && (
+                          <div
+                            role="group"
+                            aria-label="Filter evidence by record type"
+                            style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}
+                          >
+                            <button
+                              type="button"
+                              className="btn"
+                              aria-pressed={evidenceFilter === null}
+                              onClick={() => {
+                                setEvidenceFilter(null);
+                                announce('Evidence filter cleared.');
+                              }}
+                              style={{
+                                minHeight: '36px',
+                                padding: '0 0.7rem',
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                border:
+                                  evidenceFilter === null
+                                    ? '2px solid var(--worker-cyan)'
+                                    : '1px solid var(--border-color)',
+                                background:
+                                  evidenceFilter === null
+                                    ? 'rgba(34, 211, 238, 0.15)'
+                                    : 'rgba(255, 255, 255, 0.04)',
+                                color: 'var(--text-primary)',
+                              }}
+                            >
+                              All ({allEvidence.length})
+                            </button>
+                            {types.map((t: string) => {
+                              const active = evidenceFilter === t;
+                              return (
+                                <button
+                                  key={t}
+                                  type="button"
+                                  className="btn"
+                                  aria-pressed={active}
+                                  onClick={() => {
+                                    setEvidenceFilter(active ? null : t);
+                                    announce(
+                                      active
+                                        ? 'Evidence filter cleared.'
+                                        : `Evidence filtered to ${t.replace(/_/g, ' ')}.`
+                                    );
+                                  }}
+                                  style={{
+                                    minHeight: '36px',
+                                  padding: '0 0.7rem',
+                                  fontSize: '0.75rem',
+                                  fontWeight: 700,
+                                  border: active
+                                    ? '2px solid var(--worker-cyan)'
+                                    : '1px solid var(--border-color)',
+                                  background: active ? 'rgba(34, 211, 238, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                                  color: 'var(--text-primary)',
+                                  }}
+                                >
+                                  {active ? '✓ ' : ''}
+                                  {t.replace(/_/g, ' ')} (
+                                  {allEvidence.filter((r: any) => r.record_type === t).length})
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {visible.map((rec: any) => (
                     <div
                       key={rec.id}
                       style={{
@@ -1819,7 +1912,10 @@ export default function WorkerPage() {
                         </details>
                       )}
                     </div>
-                  ))}
+                        ))}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </div>

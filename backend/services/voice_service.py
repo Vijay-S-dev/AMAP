@@ -288,6 +288,30 @@ VOICE_COMMAND_VOCABULARY: Dict[str, Dict[str, Any]] = {
         ],
         "safety_critical": False,
     },
+    "show_evidence": {
+        "action": "show_evidence",
+        "phrases": [
+            "show evidence",
+            "show records",
+            "open evidence",
+            "show the evidence",
+            "evidence dikhao",
+            "records dikhao",
+            "रिकॉर्ड दिखाओ",
+        ],
+        "safety_critical": False,
+    },
+    "hide_evidence": {
+        "action": "hide_evidence",
+        "phrases": [
+            "hide evidence",
+            "hide records",
+            "close evidence",
+            "hide the evidence",
+            "evidence band karo",
+        ],
+        "safety_critical": False,
+    },
     "finish_assignment": {
         "action": "finish_assignment",
         "phrases": [
