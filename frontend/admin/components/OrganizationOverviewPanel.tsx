@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { api } from '@/shared/api/client';
+import { formatIST } from '@/shared/utils/istTime';
 import { useAccessibility } from '@/shared/theme/AccessibilityContext';
 
 export function OrganizationOverviewPanel() {
@@ -205,7 +206,7 @@ export function OrganizationOverviewPanel() {
             {dashboard?.completed_tasks_count ?? '—'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
-            94.5% first-pass yield
+            {dashboard?.completion_rate_percent ?? '—'}% completion rate
           </div>
         </div>
 
@@ -217,9 +218,91 @@ export function OrganizationOverviewPanel() {
             {dashboard?.open_assistance_requests_count ?? '—'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
-            Avg response: 1.5 mins
+            {dashboard?.emergency_events_count ?? 0} emergency events
           </div>
         </div>
+      </div>
+
+      {/* Data & Content KPIs (all PostgreSQL-backed) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+        <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: '16px', borderLeft: '4px solid #06b6d4' }}>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>
+            Datasets
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: 800, marginTop: '0.25rem', color: '#06b6d4' }}>
+            {dashboard?.datasets_count ?? '—'}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+            org-owned evidence datasets
+          </div>
+        </div>
+        <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: '16px', borderLeft: '4px solid #22c55e' }}>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>
+            Workflow Definitions
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: 800, marginTop: '0.25rem', color: '#22c55e' }}>
+            {dashboard?.workflow_definitions_count ?? '—'}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+            versioned workflow compositions
+          </div>
+        </div>
+        <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: '16px', borderLeft: '4px solid #a855f7' }}>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>
+            Task Definitions
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: 800, marginTop: '0.25rem', color: '#a855f7' }}>
+            {dashboard?.task_definitions_count ?? '—'}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+            {dashboard?.pending_tasks_count ?? 0} assigned · {dashboard?.active_tasks_count ?? 0} in progress
+          </div>
+        </div>
+        <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: '16px', borderLeft: '4px solid #f97316' }}>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>
+            Completion Rate
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: 800, marginTop: '0.25rem', color: '#f97316' }}>
+            {dashboard?.completion_rate_percent ?? '—'}%
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+            {dashboard?.completed_tasks_count ?? 0} assignments completed
+          </div>
+        </div>
+      </div>
+
+      {/* Recent activity (live from worker_task_assignments; IST timestamps) */}
+      <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: '16px', marginTop: '1rem' }}>
+        <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '0.5rem' }}>🕒 Recent Assignment Activity</h3>
+        {(dashboard?.recent_activity?.length ?? 0) === 0 ? (
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>No assignment activity yet.</p>
+        ) : (
+          <div style={{ display: 'grid', gap: '0.4rem' }}>
+            {dashboard!.recent_activity!.map((a: any) => (
+              <div
+                key={a.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: '1rem',
+                  flexWrap: 'wrap',
+                  fontSize: '0.85rem',
+                  borderBottom: '1px solid var(--border-color)',
+                  paddingBottom: '0.35rem',
+                }}
+              >
+                <span style={{ fontWeight: 600 }}>{a.task_name}</span>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {a.status === 'completed'
+                    ? `✅ completed ${formatIST(a.completed_at || a.assigned_at)}`
+                    : a.status === 'in_progress'
+                      ? `🔄 in progress · started ${formatIST(a.started_at || a.assigned_at)}`
+                      : `📋 assigned ${formatIST(a.assigned_at)}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

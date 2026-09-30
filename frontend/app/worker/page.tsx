@@ -104,6 +104,8 @@ export default function WorkerPage() {
   const [workflowAssignmentId, setWorkflowAssignmentId] = useState<string | null>(null);
   /** Full current assignment row (timestamps for IST display). */
   const [currentAssignment, setCurrentAssignment] = useState<any | null>(null);
+  /** All of this worker's assignments (personal dashboard counts). */
+  const [myAssignments, setMyAssignments] = useState<any[]>([]);
   /** Worker classification for investigation tasks (persisted with the result). */
   const [decisionSelection, setDecisionSelection] = useState<string | null>(null);
   const [showEvidence, setShowEvidence] = useState<boolean>(false);
@@ -294,6 +296,7 @@ export default function WorkerPage() {
 
       // 3. Fetch real assigned tasks from backend (read-only)
       const assigned = await api.getAssignedTasks();
+      setMyAssignments(assigned || []);
       if (!assigned || assigned.length === 0) {
         setTaskLoadingError(
           'No active assembly tasks assigned to your worker profile. Please contact your supervisor.'
@@ -1667,6 +1670,43 @@ export default function WorkerPage() {
            area (MultimodalHUD) is the PRIMARY interaction region, followed by
            the current step instructions and controls. */
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.5rem' }}>
+          {/* My jobs — real counts from worker_task_assignments (PostgreSQL) */}
+          <div
+            className="glass-panel"
+            style={{
+              padding: '0.75rem 1.25rem',
+              borderRadius: '12px',
+              display: 'flex',
+              gap: '1.25rem',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              fontSize: '0.85rem',
+            }}
+          >
+            <strong style={{ fontSize: '0.9rem' }}>📋 My Jobs:</strong>
+            <span>
+              <span style={{ color: 'var(--text-secondary)' }}>Total: </span>
+              <strong>{myAssignments.length}</strong>
+            </span>
+            <span>
+              <span style={{ color: 'var(--text-secondary)' }}>Assigned: </span>
+              <strong>{myAssignments.filter((a: any) => a.status === 'assigned').length}</strong>
+            </span>
+            <span>
+              <span style={{ color: 'var(--text-secondary)' }}>In Progress: </span>
+              <strong>{myAssignments.filter((a: any) => a.status === 'in_progress').length}</strong>
+            </span>
+            <span>
+              <span style={{ color: 'var(--text-secondary)' }}>Completed: </span>
+              <strong>{myAssignments.filter((a: any) => a.status === 'completed').length}</strong>
+            </span>
+            {myAssignments.length > 1 && (
+              <span style={{ color: 'var(--text-secondary)', fontSize: '0.78rem' }}>
+                (showing current assignment — ask your supervisor to reassign focus)
+              </span>
+            )}
+          </div>
+
           {/* Assignment meta — real timestamps from PostgreSQL, shown in IST */}
           <div
             className="glass-panel"

@@ -122,7 +122,8 @@ class OrganizationManagementService:
         completed_tasks = 0
         in_progress_tasks = 0
         pending_tasks = 0
-        for task in self.tasks_repo.list_by_organization_id(organization_id):
+        org_tasks = self.tasks_repo.list_by_organization_id(organization_id)
+        for task in org_tasks:
             for assignment in self.worker_task_assignments_repo.list_by_task_id(task["id"]):
                 st = assignment.get("status")
                 if st == "completed":
@@ -131,6 +132,25 @@ class OrganizationManagementService:
                     in_progress_tasks += 1
                 elif st == "assigned":
                     pending_tasks += 1
+        total_assignments = completed_tasks + in_progress_tasks + pending_tasks
+        completion_rate = (
+            round((completed_tasks / total_assignments) * 100.0, 1)
+            if total_assignments > 0 else 0.0
+        )
+        datasets_count = len(self.datasets_repo.list_by_organization(organization_id))
+        recent_activity = [
+            {
+                "id": str(row.get("id")),
+                "task_name": row.get("task_name"),
+                "status": row.get("status"),
+                "assigned_at": row.get("assigned_at"),
+                "started_at": row.get("started_at"),
+                "completed_at": row.get("completed_at"),
+            }
+            for row in self.worker_task_assignments_repo.list_recent_by_organization(
+                organization_id, limit=8
+            )
+        ]
 
         assistance_tickets = self.get_assistance_overview(organization_id)
         emergency_events = self.get_emergency_events(organization_id)
@@ -158,6 +178,11 @@ class OrganizationManagementService:
             open_assistance_requests_count=open_assistance,
             emergency_events_count=len(emergency_events),
             current_line_utilization_percent=utilization,
+            datasets_count=datasets_count,
+            workflow_definitions_count=len(workflows),
+            task_definitions_count=len(org_tasks),
+            completion_rate_percent=completion_rate,
+            recent_activity=recent_activity,
         )
 
     # 2. Organization Profile & Settings (§ 6, § 28)

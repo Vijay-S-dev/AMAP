@@ -502,3 +502,36 @@ def test_dashboard_kpis_match_sql_truth(client):
         "WHERE r.name = 'supervisor' AND u.organization_id = %s",
         (ORG,),
     )[0][0]
+
+
+def test_organization_dashboard_kpis_include_data_and_activity(client):
+    """Phase 13/dashboards: dashboard KPIs expose datasets/workflow/task
+    definition counts, completion rate and a recent-activity feed backed by
+    worker_task_assignments (no hardcoded metrics)."""
+    tok = _login(client, "admin@amap.com")
+    res = client.get("/api/v1/organizations/manage/dashboard", headers=_auth(tok))
+    assert res.status_code == 200, res.text
+    d = res.json()
+
+    datasets, workflows, tasks = _pg(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM datasets WHERE organization_id = %s),
+            (SELECT COUNT(*) FROM workflows WHERE organization_id = %s),
+            (SELECT COUNT(*) FROM tasks WHERE organization_id = %s)
+        """,
+        (ORG, ORG, ORG),
+    )[0]
+    assert d["datasets_count"] == datasets
+    assert d["workflow_definitions_count"] == workflows
+    assert d["task_definitions_count"] == tasks
+
+    completed = d["completed_tasks_count"]
+    total_assign = completed + d["active_tasks_count"] + d["pending_tasks_count"]
+    expected_rate = round((completed / total_assign) * 100.0, 1) if total_assign else 0.0
+    assert d["completion_rate_percent"] == expected_rate
+
+    assert isinstance(d["recent_activity"], list) and d["recent_activity"]
+    entry = d["recent_activity"][0]
+    assert entry["task_name"]
+    assert entry["status"] in ("assigned", "in_progress", "completed", "cancelled", "archived")

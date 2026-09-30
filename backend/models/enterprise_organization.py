@@ -235,6 +235,11 @@ class OrganizationDashboardKPIs(AMAPBaseModel):
     open_assistance_requests_count: int
     emergency_events_count: int
     current_line_utilization_percent: float
+    datasets_count: int = 0
+    workflow_definitions_count: int = 0
+    task_definitions_count: int = 0
+    completion_rate_percent: float = 0.0
+    recent_activity: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class OrganizationAnalyticsSummary(AMAPBaseModel):
