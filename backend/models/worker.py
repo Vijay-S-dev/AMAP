@@ -53,6 +53,9 @@ class WorkerTaskAssignmentRead(AMAPBaseModel):
     task_id: UUID
     workflow_assignment_id: Optional[UUID] = None
     status: str
+    assigned_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

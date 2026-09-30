@@ -42,6 +42,19 @@ export interface WorkflowStep {
   completed?: boolean;
 }
 
+/** A database-backed evidence record linked to a task (task_evidence join). */
+export interface TaskEvidenceRecord {
+  id: string;
+  dataset_name?: string | null;
+  record_type: string;
+  title: string;
+  source_ref?: string | null;
+  payload: Record<string, any>;
+  occurred_at?: string | null;
+  related_record_id?: string | null;
+  relevance?: string | null;
+}
+
 export interface TaskDetails {
   id: string;
   organizationId: string;
@@ -51,6 +64,12 @@ export interface TaskDetails {
   totalSteps: number;
   currentStepIndex: number;
   steps: WorkflowStep[];
+  /** Linked evidence records (dataset_records via task_evidence). */
+  evidence?: TaskEvidenceRecord[];
+  evidence_count?: number;
+  /** Decision capture for investigation tasks (tasks.decision_prompt/options). */
+  decision_prompt?: string | null;
+  decision_options?: string[];
 }
 
 export interface MultimodalInputItem {

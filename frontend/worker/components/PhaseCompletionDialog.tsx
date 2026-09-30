@@ -20,6 +20,7 @@
 import React, { useEffect, useRef } from 'react';
 import { t, tParams } from '@/shared/i18n/languages';
 import { useAccessibility } from '@/shared/theme/AccessibilityContext';
+import { formatIST, formatDurationSeconds } from '@/shared/utils/istTime';
 
 export interface PhaseCompletionInfo {
   assignmentId: string;
@@ -28,6 +29,10 @@ export interface PhaseCompletionInfo {
   totalSteps: number;
   outcome: string;
   durationSeconds?: number | null;
+  /** ISO-8601 UTC completion timestamp (task_results.recorded_at), shown in IST. */
+  completedAt?: string | null;
+  /** Worker classification for investigation tasks (result_data.classification). */
+  classification?: string | null;
 }
 
 interface PhaseCompletionDialogProps {
@@ -162,7 +167,23 @@ export function PhaseCompletionDialog({ completion, onContinue }: PhaseCompletio
             <div className="glass-panel" style={{ padding: '0.85rem', borderRadius: '12px' }}>
               <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block' }}>Duration</span>
               <strong style={{ fontSize: '1.15rem', color: 'var(--text-primary)' }}>
-                {Math.round(completion.durationSeconds)}s
+                {formatDurationSeconds(completion.durationSeconds)}
+              </strong>
+            </div>
+          )}
+          {completion.classification && (
+            <div className="glass-panel" style={{ padding: '0.85rem', borderRadius: '12px' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block' }}>Classification</span>
+              <strong style={{ fontSize: '0.95rem', color: 'var(--org-emerald)', wordBreak: 'break-word' }}>
+                {completion.classification.replace(/_/g, ' ')}
+              </strong>
+            </div>
+          )}
+          {completion.completedAt && (
+            <div className="glass-panel" style={{ padding: '0.85rem', borderRadius: '12px' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block' }}>Completed</span>
+              <strong style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                {formatIST(completion.completedAt)}
               </strong>
             </div>
           )}

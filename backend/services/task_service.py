@@ -12,6 +12,7 @@ from uuid import UUID
 from models.task import TaskRead
 from models.worker import WorkerTaskAssignmentRead
 from repositories.tasks import TasksRepository
+from repositories.task_evidence import TaskEvidenceRepository
 from repositories.task_results import TaskResultsRepository
 from repositories.task_workflows import TaskWorkflowsRepository
 from repositories.worker_task_assignments import WorkerTaskAssignmentsRepository
@@ -35,6 +36,7 @@ class TaskService:
         workflow_steps_repo: Optional[WorkflowStepsRepository] = None,
         workflow_assignments_repo: Optional[WorkflowAssignmentsRepository] = None,
         step_executions_repo: Optional[WorkflowStepExecutionsRepository] = None,
+        task_evidence_repo: Optional[TaskEvidenceRepository] = None,
     ) -> None:
         self.tasks_repo = tasks_repo or TasksRepository()
         self.task_assignments_repo = task_assignments_repo or WorkerTaskAssignmentsRepository()
@@ -44,6 +46,7 @@ class TaskService:
         self.workflow_steps_repo = workflow_steps_repo or WorkflowStepsRepository()
         self.workflow_assignments_repo = workflow_assignments_repo or WorkflowAssignmentsRepository()
         self.step_executions_repo = step_executions_repo or WorkflowStepExecutionsRepository()
+        self.task_evidence_repo = task_evidence_repo or TaskEvidenceRepository()
 
     def get_worker_assignments(self, worker_profile_id: UUID) -> List[WorkerTaskAssignmentRead]:
         """Return all task assignments for a worker profile (strictly read-only)."""
@@ -141,6 +144,29 @@ class TaskService:
 
         if assignment.get("status") in ("completed", "cancelled"):
             raise ConflictError(f"Cannot complete an already {assignment['status']} task assignment.")
+
+        # Investigation-task decision enforcement: when the task defines
+        # decision options, a completion must carry a valid worker
+        # classification in result_data.classification.
+        if outcome == "completed" and assignment.get("task_id"):
+            decision_task = self.tasks_repo.get_by_id(assignment["task_id"])
+            decision_options = (
+                decision_task.get("decision_options")
+                if isinstance(decision_task, dict)
+                else None
+            )
+            if isinstance(decision_options, (list, tuple)) and decision_options:
+                classification = (result_data or {}).get("classification")
+                if not classification:
+                    raise ValidationError(
+                        "This task requires a decision: set result_data.classification "
+                        "to one of the allowed options."
+                    )
+                if classification not in decision_options:
+                    raise ValidationError(
+                        f"Invalid classification '{classification}'. "
+                        f"Allowed options: {list(decision_options)}."
+                    )
 
         # Resolve linked workflow steps and verify completion if outcome is 'completed'
         total_steps = 0
@@ -290,6 +316,28 @@ class TaskService:
         if organization_id and task.get("organization_id") != organization_id:
             raise UnauthorizedError("Task does not belong to user's organization.")
 
+        # Evidence records linked to this task (org-scoped) for
+        # data-backed investigations.
+        evidence_rows = self.task_evidence_repo.list_by_task_id(
+            task_id, organization_id=task.get("organization_id")
+        )
+        evidence = [
+            {
+                "id": str(row["id"]),
+                "dataset_name": row.get("dataset_name"),
+                "record_type": row.get("record_type"),
+                "title": row.get("title"),
+                "source_ref": row.get("source_ref"),
+                "payload": row.get("payload") or {},
+                "occurred_at": row.get("occurred_at"),
+                "related_record_id": (
+                    str(row["related_record_id"]) if row.get("related_record_id") else None
+                ),
+                "relevance": row.get("relevance"),
+            }
+            for row in evidence_rows
+        ]
+
         tw_links = self.task_workflows_repo.list_by_task_id(task_id)
         workflow_id = tw_links[0]["workflow_id"] if tw_links else None
         steps: List[Dict[str, Any]] = []
@@ -316,6 +364,10 @@ class TaskService:
             "workflow_id": str(workflow_id) if workflow_id else None,
             "total_steps": len(steps),
             "steps": steps,
+            "evidence": evidence,
+            "evidence_count": len(evidence),
+            "decision_prompt": task.get("decision_prompt"),
+            "decision_options": task.get("decision_options") or [],
         }
 
     def get_step_executions(

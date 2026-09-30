@@ -19,6 +19,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { MultimodalHUD } from '@/worker/components/MultimodalHUD';
 import { WorkflowStepViewer } from '@/worker/components/WorkflowStepViewer';
+import { formatIST } from '@/shared/utils/istTime';
 import { AssistanceModal } from '@/worker/components/AssistanceModal';
 import { VirtualCursor } from '@/worker/components/VirtualCursor';
 import { GestureContextMenu } from '@/worker/components/GestureContextMenu';
@@ -101,6 +102,11 @@ export default function WorkerPage() {
   const [assignmentId, setAssignmentId] = useState<string | null>(null);
   const [assignmentStatus, setAssignmentStatus] = useState<string | null>(null);
   const [workflowAssignmentId, setWorkflowAssignmentId] = useState<string | null>(null);
+  /** Full current assignment row (timestamps for IST display). */
+  const [currentAssignment, setCurrentAssignment] = useState<any | null>(null);
+  /** Worker classification for investigation tasks (persisted with the result). */
+  const [decisionSelection, setDecisionSelection] = useState<string | null>(null);
+  const [showEvidence, setShowEvidence] = useState<boolean>(false);
   const [currentStepIndex, setCurrentStepIndex] = useState<number>(0);
   const [completedStepIds, setCompletedStepIds] = useState<Set<string>>(new Set());
   const [installedParts, setInstalledParts] = useState<Record<string, string>>({});
@@ -298,6 +304,7 @@ export default function WorkerPage() {
         assigned.find((a: any) => a.status === 'active' || a.status === 'in_progress') || assigned[0];
       setAssignmentId(targetAssignment.id);
       setAssignmentStatus(targetAssignment.status);
+      setCurrentAssignment(targetAssignment);
 
       // 4b. REAL completion state after refresh / re-login: when the current
       // assignment is completed in PostgreSQL, surface the success dialog
@@ -323,6 +330,8 @@ export default function WorkerPage() {
               totalSteps: result?.result_data?.total_steps ?? details?.steps?.length ?? 0,
               outcome: result?.outcome || 'completed',
               durationSeconds: result?.result_data?.duration_seconds ?? null,
+              completedAt: result?.recorded_at ?? null,
+              classification: result?.result_data?.classification ?? null,
             });
           }
         } catch (completionErr) {
@@ -1082,10 +1091,23 @@ export default function WorkerPage() {
         // still considers the assignment open (completed assignments are
         // idempotently skipped, never re-completed).
         if (assignmentStatus !== 'completed') {
+          // Investigation tasks require an explicit worker decision — the
+          // backend rejects completion without a valid classification.
+          if (task?.decision_options?.length && !decisionSelection) {
+            setStatusMessage('⚠️ A decision is required: select a classification before finishing this task.');
+            announce('A decision is required before finishing this task.');
+            playAudioCue('alert');
+            return;
+          }
           await api.completeTaskAssignment(assignmentId, {
             outcome: 'completed',
-            result_data: { completed_steps: task?.steps?.length || 0 },
-            notes: 'Assembly completed through accessible multimodal workstation',
+            result_data: {
+              completed_steps: task?.steps?.length || 0,
+              ...(decisionSelection ? { classification: decisionSelection } : {}),
+            },
+            notes: task?.decision_options?.length
+              ? 'Investigation completed and decision submitted through accessible multimodal workstation'
+              : 'Assembly completed through accessible multimodal workstation',
           });
           setAssignmentStatus('completed');
         }
@@ -1109,6 +1131,8 @@ export default function WorkerPage() {
           totalSteps: resData?.result_data?.total_steps ?? task?.steps?.length ?? 0,
           outcome: resData?.outcome || 'completed',
           durationSeconds: resData?.result_data?.duration_seconds ?? null,
+          completedAt: resData?.recorded_at ?? null,
+          classification: resData?.result_data?.classification ?? decisionSelection ?? null,
         });
       }
       // End the work session so the supervisor monitor reflects reality.
@@ -1555,6 +1579,28 @@ export default function WorkerPage() {
               </strong>
             </div>
 
+            {completedTaskResult?.result_data?.classification && (
+              <div className="glass-panel" style={{ padding: '1rem', borderRadius: '12px' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'block' }}>
+                  Classification
+                </span>
+                <strong style={{ fontSize: '1rem', color: 'var(--org-emerald)', wordBreak: 'break-word' }}>
+                  {String(completedTaskResult.result_data.classification).replace(/_/g, ' ')}
+                </strong>
+              </div>
+            )}
+
+            {completedTaskResult?.recorded_at && (
+              <div className="glass-panel" style={{ padding: '1rem', borderRadius: '12px' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'block' }}>
+                  Completed (IST)
+                </span>
+                <strong style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                  {formatIST(completedTaskResult.recorded_at)}
+                </strong>
+              </div>
+            )}
+
             <div className="glass-panel" style={{ padding: '1rem', borderRadius: '12px' }}>
               <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'block' }}>Completed Steps</span>
               <strong style={{ fontSize: '1.2rem', color: 'var(--worker-cyan)' }}>
@@ -1606,6 +1652,40 @@ export default function WorkerPage() {
            area (MultimodalHUD) is the PRIMARY interaction region, followed by
            the current step instructions and controls. */
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.5rem' }}>
+          {/* Assignment meta — real timestamps from PostgreSQL, shown in IST */}
+          <div
+            className="glass-panel"
+            style={{
+              padding: '0.9rem 1.25rem',
+              borderRadius: '12px',
+              display: 'flex',
+              gap: '1.5rem',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              fontSize: '0.85rem',
+            }}
+          >
+            <strong style={{ fontSize: '1rem' }}>{task.name}</strong>
+            <span>
+              <span style={{ color: 'var(--text-secondary)' }}>Status: </span>
+              <strong>{(assignmentStatus || 'assigned').toUpperCase()}</strong>
+            </span>
+            <span>
+              <span style={{ color: 'var(--text-secondary)' }}>Assigned: </span>
+              {formatIST(currentAssignment?.assigned_at)}
+            </span>
+            <span>
+              <span style={{ color: 'var(--text-secondary)' }}>Started: </span>
+              {formatIST(currentAssignment?.started_at)}
+            </span>
+            {currentAssignment?.completed_at && (
+              <span>
+                <span style={{ color: 'var(--text-secondary)' }}>Completed: </span>
+                {formatIST(currentAssignment.completed_at)}
+              </span>
+            )}
+          </div>
+
           <MultimodalHUD
             onActionTriggered={handleActionTriggered}
             workSessionId={session?.id || null}
@@ -1656,6 +1736,142 @@ export default function WorkerPage() {
               onPartInstalled={handlePartInstalled}
             />
           </WorkflowStepViewer>
+
+          {/* Investigation evidence — real dataset_records linked to this
+              task via task_evidence (no frontend fallback data). */}
+          {(task.evidence?.length ?? 0) > 0 && (
+            <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: '18px' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '1rem',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>
+                  🔍 Investigation Evidence ({task.evidence!.length} records
+                  {task.evidence![0]?.dataset_name ? ` — ${task.evidence![0].dataset_name}` : ''})
+                </h3>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  aria-expanded={showEvidence}
+                  aria-controls="task-evidence-list"
+                  onClick={() => {
+                    setShowEvidence((v) => !v);
+                    announce(showEvidence ? 'Evidence records hidden.' : 'Evidence records shown.');
+                  }}
+                  style={{ minHeight: '44px', padding: '0 1rem', fontSize: '0.85rem' }}
+                >
+                  {showEvidence ? '▲ Hide Records' : '▼ Show Records'}
+                </button>
+              </div>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', margin: '0.4rem 0 0 0' }}>
+                Linked production, inspection, maintenance, supply-chain and incident records from PostgreSQL
+                (synthetic sample data). Timestamps shown in IST.
+              </p>
+              {showEvidence && (
+                <div id="task-evidence-list" style={{ display: 'grid', gap: '0.75rem', marginTop: '1rem' }}>
+                  {task.evidence!.map((rec: any) => (
+                    <div
+                      key={rec.id}
+                      style={{
+                        borderLeft: '3px solid var(--worker-cyan)',
+                        padding: '0.75rem 1rem',
+                        background: 'rgba(255, 255, 255, 0.03)',
+                        borderRadius: '8px',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          gap: '1rem',
+                          flexWrap: 'wrap',
+                          alignItems: 'baseline',
+                        }}
+                      >
+                        <strong style={{ fontSize: '0.95rem' }}>{rec.title}</strong>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          {formatIST(rec.occurred_at)}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                        {(rec.record_type || 'record').toUpperCase()}
+                        {rec.source_ref ? ` · ${rec.source_ref}` : ''}
+                        {rec.relevance ? ` · ${rec.relevance}` : ''}
+                      </div>
+                      {rec.payload && Object.keys(rec.payload).length > 0 && (
+                        <details style={{ marginTop: '0.4rem' }}>
+                          <summary style={{ cursor: 'pointer', fontSize: '0.8rem' }}>Record details</summary>
+                          <pre
+                            style={{
+                              fontSize: '0.75rem',
+                              whiteSpace: 'pre-wrap',
+                              margin: '0.5rem 0 0 0',
+                              color: 'var(--text-secondary)',
+                            }}
+                          >
+                            {JSON.stringify(rec.payload, null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Required decision for investigation tasks — persisted with the
+              task result (result_data.classification) on completion. */}
+          {(task.decision_options?.length ?? 0) > 0 && (
+            <div
+              className="glass-panel"
+              style={{ padding: '1.25rem', borderRadius: '18px', borderLeft: '4px solid var(--accent-amber)' }}
+            >
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>⚖️ Required Decision</h3>
+              <p style={{ fontSize: '0.9rem', margin: '0.4rem 0 0.75rem 0' }}>
+                {task.decision_prompt || 'Review the evidence and classify your decision.'}
+              </p>
+              <div role="radiogroup" aria-label="Classification decision" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
+                {task.decision_options!.map((opt: string) => {
+                  const selected = decisionSelection === opt;
+                  return (
+                    <button
+                      key={opt}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => {
+                        setDecisionSelection(opt);
+                        announce(`Classification selected: ${opt.replace(/_/g, ' ')}.`);
+                      }}
+                      className="btn"
+                      style={{
+                        minHeight: '48px',
+                        padding: '0 1rem',
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                        border: selected ? '2px solid var(--org-emerald)' : '1px solid var(--border-color)',
+                        background: selected ? 'rgba(16, 185, 129, 0.18)' : 'rgba(255, 255, 255, 0.04)',
+                        color: selected ? 'var(--org-emerald)' : 'var(--text-primary)',
+                      }}
+                    >
+                      {selected ? '✓ ' : ''}
+                      {opt.replace(/_/g, ' ')}
+                    </button>
+                  );
+                })}
+              </div>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '0.75rem 0 0 0' }}>
+                A classification is required to complete this task. Your decision is stored in PostgreSQL with the
+                task result.
+              </p>
+            </div>
+          )}
 
           {/* Worker-personalized gesture mapping + calibration (PostgreSQL) */}
           <GestureControlPanel
