@@ -8,13 +8,33 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAccessibility } from '@/shared/theme/AccessibilityContext';
 import { SUPPORTED_LANGUAGES, SupportedLanguage } from '@/shared/i18n/languages';
+import { api } from '@/shared/api/client';
 
 export function NavBar() {
   const pathname = usePathname();
+  const router = useRouter();
   const { language, setLanguage, highContrast, setHighContrast, isReady } = useAccessibility();
+
+  // Auth session presence (client-side JWT). Re-checked on every route change
+  // so the Logout control appears after login and disappears after logout.
+  const [isAuthenticated, setIsAuthenticated] = React.useState(false);
+  React.useEffect(() => {
+    setIsAuthenticated(
+      typeof window !== 'undefined' && Boolean(window.localStorage.getItem('amap_token'))
+    );
+  }, [pathname]);
+
+  const handleLogout = () => {
+    // Stateless JWT auth: logout = discard the client credentials (token +
+    // org context + edge-middleware cookie). Protected routes then redirect
+    // to /login via the middleware.
+    api.clearAuth();
+    setIsAuthenticated(false);
+    router.push('/login');
+  };
 
   const navLinks = [
     { href: '/', label: 'Overview', badge: 'Hub' },
@@ -121,6 +141,19 @@ export function NavBar() {
           >
             {highContrast ? '👁️ Standard' : '🔲 High Contrast'}
           </button>
+
+          {/* Logout (visible only in an authenticated session) */}
+          {isAuthenticated && (
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="btn btn-secondary"
+              aria-label="Log out of AMAP"
+              style={{ fontSize: '0.85rem', padding: '0.5rem 1rem', minHeight: '48px', display: 'inline-flex', alignItems: 'center' }}
+            >
+              🚪 Logout
+            </button>
+          )}
         </div>
       </div>
     </header>
