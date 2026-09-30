@@ -350,6 +350,7 @@ class TaskService:
                     "title": s.get("name") or s.get("title") or f"Step {idx + 1}",
                     "instructionText": s.get("description") or s.get("instruction") or "",
                     "isSafetyCritical": s.get("is_safety_critical", False),
+                    "expectedDurationSeconds": s.get("expected_duration_seconds"),
                     "spatialTargetId": s.get("spatial_target_id") if "spatial_target_id" in s else None,
                 }
                 for idx, s in enumerate(raw_steps)

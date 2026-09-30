@@ -573,35 +573,61 @@ VALUES
     ('e1500000-0000-0000-0000-000000000001', 'aa100000-0000-0000-0000-000000000005', 'Feeder Voltage Investigation Workflow', 'Sensor, ticket and maintenance evidence review for F-12', 'active')
 ON CONFLICT (id) DO NOTHING;
 
--- 17i. Investigation workflow steps
-INSERT INTO workflow_steps (id, workflow_id, step_order, name, description, status)
+-- 17i. Investigation workflow steps (Phase 10: genuinely different job
+--      structures per industry — triage / verification / reconciliation /
+--      coordination steps, industry-specific safety-critical checkpoints,
+--      varied expected durations; not copies of the Acme workflow)
+INSERT INTO workflow_steps (id, workflow_id, step_order, name, description, is_safety_critical, expected_duration_seconds, status)
 VALUES
-    ('f1000000-0000-0000-0000-000000000001', 'e1000000-0000-0000-0000-000000000001', 1, 'Review Production Batch Records', 'Compare production records for batch BR-2026-0917 against the baseline batch BR-2026-0916: machine, material and bearing lots, and operator notes.', 'active'),
-    ('f1000000-0000-0000-0000-000000000002', 'e1000000-0000-0000-0000-000000000001', 2, 'Review Quality Inspection Results', 'Examine the final noise/vibration gate failures and the in-process dimensional checks for the bearing bores.', 'active'),
-    ('f1000000-0000-0000-0000-000000000003', 'e1000000-0000-0000-0000-000000000001', 3, 'Review Maintenance History', 'Check the CNC-7 spindle service record and the torque tool calibration status before the batch ran.', 'active'),
-    ('f1000000-0000-0000-0000-000000000004', 'e1000000-0000-0000-0000-000000000001', 4, 'Review Incident Reports', 'Review the end-of-line test bench noise complaint and the Line 3 unplanned stoppage linked to this batch.', 'active'),
-    ('f1000000-0000-0000-0000-000000000005', 'e1000000-0000-0000-0000-000000000001', 5, 'Classify Root Cause & Submit Decision', 'Weigh all evidence and classify the root cause. A decision is required to complete this task.', 'active'),
-    ('f1000000-0000-0000-0000-000000000011', 'e1000000-0000-0000-0000-000000000002', 1, 'Review Paint Shop Records', 'Review the paint shop run PA-2026-0830: booth, pretreatment bath, cure oven and paint lot.', 'active'),
-    ('f1000000-0000-0000-0000-000000000012', 'e1000000-0000-0000-0000-000000000002', 2, 'Review Adhesion Test Results', 'Examine the cross-cut test failures against specification.', 'active'),
-    ('f1000000-0000-0000-0000-000000000013', 'e1000000-0000-0000-0000-000000000002', 3, 'Review Incident Reports', 'Review the PT-04 pretreatment bath filter alarm raised before the run.', 'active'),
-    ('f1000000-0000-0000-0000-000000000014', 'e1000000-0000-0000-0000-000000000002', 4, 'Classify Root Cause & Submit Decision', 'Weigh all evidence and classify the root cause. A decision is required to complete this task.', 'active'),
-    ('f1200000-0000-0000-0000-000000000001', 'e1200000-0000-0000-0000-000000000001', 1, 'Review Vitals Trend', 'Examine the heart-rate, blood-pressure, temperature and SpO2 trend for Bed 7.', 'active'),
-    ('f1200000-0000-0000-0000-000000000002', 'e1200000-0000-0000-0000-000000000001', 2, 'Review Medications & Lab Panel', 'Check administered medications and the morning lab panel for explanatory patterns.', 'active'),
-    ('f1200000-0000-0000-0000-000000000003', 'e1200000-0000-0000-0000-000000000001', 3, 'Review Notes & Handover', 'Read the nursing observation note and the shift handover summary.', 'active'),
-    ('f1200000-0000-0000-0000-000000000004', 'e1200000-0000-0000-0000-000000000001', 4, 'Classify & Decide', 'Weigh all evidence and classify the clinical response. A decision is required to complete this task.', 'active'),
-    ('f1300000-0000-0000-0000-000000000001', 'e1300000-0000-0000-0000-000000000001', 1, 'Review Flagged Transactions', 'Examine transactions T-99182 and T-99204: amounts, merchants, geos and 3-D Secure outcomes.', 'active'),
-    ('f1300000-0000-0000-0000-000000000002', 'e1300000-0000-0000-0000-000000000001', 2, 'Review Fraud Alert & Profile', 'Check the velocity rule trigger against the customer profile and travel history.', 'active'),
-    ('f1300000-0000-0000-0000-000000000003', 'e1300000-0000-0000-0000-000000000001', 3, 'Review Merchant Notes', 'Consider the merchant chargeback history note.', 'active'),
-    ('f1300000-0000-0000-0000-000000000004', 'e1300000-0000-0000-0000-000000000001', 4, 'Classify & Decide', 'Weigh all evidence and classify the case. A decision is required to complete this task.', 'active'),
-    ('f1400000-0000-0000-0000-000000000001', 'e1400000-0000-0000-0000-000000000001', 1, 'Review Shipment Records', 'Compare the delayed consignment RTM-77412 with the on-time baseline RTM-77398.', 'active'),
-    ('f1400000-0000-0000-0000-000000000002', 'e1400000-0000-0000-0000-000000000001', 2, 'Review Scan Events', 'Examine the missed departure scan on dock 4 and the trailer assignment.', 'active'),
-    ('f1400000-0000-0000-0000-000000000003', 'e1400000-0000-0000-0000-000000000001', 3, 'Review Customs & Driver Reports', 'Read the customs hold incident and the driver report.', 'active'),
-    ('f1400000-0000-0000-0000-000000000004', 'e1400000-0000-0000-0000-000000000001', 4, 'Classify & Decide', 'Weigh all evidence and classify the root cause. A decision is required to complete this task.', 'active'),
-    ('f1500000-0000-0000-0000-000000000001', 'e1500000-0000-0000-0000-000000000001', 1, 'Review Sensor Readings', 'Examine the phase-B voltage sag and the 24-hour load trend.', 'active'),
-    ('f1500000-0000-0000-0000-000000000002', 'e1500000-0000-0000-0000-000000000001', 2, 'Review Outage Ticket & SCADA Alarms', 'Check the outage ticket and the SCADA alarm cluster timing.', 'active'),
-    ('f1500000-0000-0000-0000-000000000003', 'e1500000-0000-0000-0000-000000000001', 3, 'Review Maintenance History', 'Read the transformer T-F12 tap changer service record.', 'active'),
-    ('f1500000-0000-0000-0000-000000000004', 'e1500000-0000-0000-0000-000000000001', 4, 'Classify & Decide', 'Weigh all evidence and classify the root cause. A decision is required to complete this task.', 'active')
-ON CONFLICT (id) DO NOTHING;
+    -- Acme Motors — gearbox noise root-cause investigation (reference job:
+    -- batch comparison -> quality gates -> maintenance -> incidents -> classify)
+    ('f1000000-0000-0000-0000-000000000001', 'e1000000-0000-0000-0000-000000000001', 1, 'Review Production Batch Records', 'Compare production records for batch BR-2026-0917 against the baseline batch BR-2026-0916: machine, material and bearing lots, and operator notes.', FALSE, 240, 'active'),
+    ('f1000000-0000-0000-0000-000000000002', 'e1000000-0000-0000-0000-000000000001', 2, 'Review Quality Inspection Results', 'Examine the final noise/vibration gate failures and the in-process dimensional checks for the bearing bores.', FALSE, 300, 'active'),
+    ('f1000000-0000-0000-0000-000000000003', 'e1000000-0000-0000-0000-000000000001', 3, 'Review Maintenance History', 'Check the CNC-7 spindle service record and the torque tool calibration status before the batch ran.', FALSE, 240, 'active'),
+    ('f1000000-0000-0000-0000-000000000004', 'e1000000-0000-0000-0000-000000000001', 4, 'Review Incident Reports', 'Review the end-of-line test bench noise complaint and the Line 3 unplanned stoppage linked to this batch.', FALSE, 300, 'active'),
+    ('f1000000-0000-0000-0000-000000000005', 'e1000000-0000-0000-0000-000000000001', 5, 'Classify Root Cause & Submit Decision', 'Weigh all evidence and classify the root cause. A decision is required to complete this task.', FALSE, 180, 'active'),
+    -- Acme Motors — paint adhesion (completed seeded example; unchanged)
+    ('f1000000-0000-0000-0000-000000000011', 'e1000000-0000-0000-0000-000000000002', 1, 'Review Paint Shop Records', 'Review the paint shop run PA-2026-0830: booth, pretreatment bath, cure oven and paint lot.', FALSE, 120, 'active'),
+    ('f1000000-0000-0000-0000-000000000012', 'e1000000-0000-0000-0000-000000000002', 2, 'Review Adhesion Test Results', 'Examine the cross-cut test failures against specification.', FALSE, 120, 'active'),
+    ('f1000000-0000-0000-0000-000000000013', 'e1000000-0000-0000-0000-000000000002', 3, 'Review Incident Reports', 'Review the PT-04 pretreatment bath filter alarm raised before the run.', FALSE, 120, 'active'),
+    ('f1000000-0000-0000-0000-000000000014', 'e1000000-0000-0000-0000-000000000002', 4, 'Classify Root Cause & Submit Decision', 'Weigh all evidence and classify the root cause. A decision is required to complete this task.', FALSE, 120, 'active'),
+    -- MediCare — clinical escalation review: triage -> SAFETY-CRITICAL
+    -- medication verification -> labs -> notes/handover -> escalation decision
+    ('f1200000-0000-0000-0000-000000000001', 'e1200000-0000-0000-0000-000000000001', 1, 'Triage Vitals Trend', 'Examine the Bed 7 heart-rate, blood-pressure, temperature and SpO2 trend and flag the anomalies that triggered the review.', FALSE, 240, 'active'),
+    ('f1200000-0000-0000-0000-000000000002', 'e1200000-0000-0000-0000-000000000001', 2, 'Verify Medication Record', 'Cross-check the medication administration record against the pharmacy reconciliation before interpreting the trend. Mandatory double-check: an unverified medication record must not drive a clinical decision.', TRUE, 300, 'active'),
+    ('f1200000-0000-0000-0000-000000000003', 'e1200000-0000-0000-0000-000000000001', 3, 'Interpret Lab Panel', 'Interpret the morning WBC, CRP and lactate results against the vital-sign anomalies.', FALSE, 240, 'active'),
+    ('f1200000-0000-0000-0000-000000000004', 'e1200000-0000-0000-0000-000000000001', 4, 'Cross-Check Notes, Handover & Case Review', 'Read the nursing observation, the shift handover, the physician case review and the scheduled follow-up appointment for corroborating context.', FALSE, 240, 'active'),
+    ('f1200000-0000-0000-0000-000000000005', 'e1200000-0000-0000-0000-000000000001', 5, 'Classify & Decide Escalation', 'Weigh all evidence and classify the clinical response and escalation. A decision is required to complete this task.', FALSE, 180, 'active'),
+    -- Nexa Finance — fraud/AML case review: alert triage -> COMPLIANCE-CRITICAL
+    -- customer verification -> merchant risk -> AML case assembly -> decision
+    ('f1300000-0000-0000-0000-000000000001', 'e1300000-0000-0000-0000-000000000001', 1, 'Triage Alert & Transactions', 'Examine the velocity rule alert and the two flagged transactions: amounts, merchants, geographies and 3-D Secure outcomes.', FALSE, 240, 'active'),
+    ('f1300000-0000-0000-0000-000000000002', 'e1300000-0000-0000-0000-000000000001', 2, 'Verify Customer Identity & Contact Log', 'Confirm the customer profile, travel history, account summary and the contact attempt log before deciding. Compliance-mandatory verification: never classify a case on transaction data alone.', TRUE, 300, 'active'),
+    ('f1300000-0000-0000-0000-000000000003', 'e1300000-0000-0000-0000-000000000001', 3, 'Review Merchant Risk Notes', 'Consider the merchant chargeback history and the network bulletin note.', FALSE, 180, 'active'),
+    ('f1300000-0000-0000-0000-000000000004', 'e1300000-0000-0000-0000-000000000001', 4, 'Assemble AML Case File', 'Summarise the open AML risk-review case stage, the SARL status and the regulatory deadline for the case file.', FALSE, 240, 'active'),
+    ('f1300000-0000-0000-0000-000000000005', 'e1300000-0000-0000-0000-000000000001', 5, 'Classify & Decide', 'Weigh all evidence and classify the case. A decision is required to complete this task.', FALSE, 180, 'active'),
+    -- LogiCore — shipment delay exception: baseline comparison -> scan-trail
+    -- reconstruction -> inventory reconciliation -> customs/driver -> decision
+    ('f1400000-0000-0000-0000-000000000001', 'e1400000-0000-0000-0000-000000000001', 1, 'Compare Shipments Against Baseline', 'Compare the delayed consignment RTM-77412 with the on-time baseline RTM-77398: routes, trailers, promised windows and contents.', FALSE, 240, 'active'),
+    ('f1400000-0000-0000-0000-000000000002', 'e1400000-0000-0000-0000-000000000001', 2, 'Reconstruct Scan Trail', 'Rebuild the dock 4 departure-scan gap from the scan events and the carrier schedule slot resequencing.', FALSE, 300, 'active'),
+    ('f1400000-0000-0000-0000-000000000003', 'e1400000-0000-0000-0000-000000000001', 3, 'Reconcile Inventory Snapshot', 'Reconcile the bearings inventory snapshot discrepancy (20 unaccounted units) against the resequenced loads.', FALSE, 300, 'active'),
+    ('f1400000-0000-0000-0000-000000000004', 'e1400000-0000-0000-0000-000000000001', 4, 'Review Customs Hold & Driver Report', 'Read the customs documentation-mismatch incident and the driver report on dock congestion.', FALSE, 240, 'active'),
+    ('f1400000-0000-0000-0000-000000000005', 'e1400000-0000-0000-0000-000000000001', 5, 'Classify & Decide Customer Action', 'Weigh all evidence and classify the root cause and the required customer communication action. A decision is required to complete this task.', FALSE, 180, 'active'),
+    -- BrightGrid — feeder anomaly diagnosis: sensor analysis -> SCADA/outage
+    -- correlation -> SAFETY-CRITICAL field-crew coordination -> asset history
+    -- -> remediation decision
+    ('f1500000-0000-0000-0000-000000000001', 'e1500000-0000-0000-0000-000000000001', 1, 'Analyze Sensor Readings', 'Analyse the phase-B voltage sag measurement and the 24-hour load imbalance trend.', FALSE, 240, 'active'),
+    ('f1500000-0000-0000-0000-000000000002', 'e1500000-0000-0000-0000-000000000001', 2, 'Correlate SCADA Alarms & Outage Ticket', 'Correlate the SCADA alarm cluster timing with the outage ticket scope and customer count.', FALSE, 300, 'active'),
+    ('f1500000-0000-0000-0000-000000000003', 'e1500000-0000-0000-0000-000000000001', 3, 'Verify Field Crew Coordination', 'Confirm the field crew dispatch state and assigned tasks before recommending any switching, isolation or remediation action. Mandatory double-check: no remediation decision without confirmed crew coordination.', TRUE, 240, 'active'),
+    ('f1500000-0000-0000-0000-000000000004', 'e1500000-0000-0000-0000-000000000001', 4, 'Review Asset & Maintenance History', 'Review the transformer T-F12 asset registry entry and the tap changer service record.', FALSE, 300, 'active'),
+    ('f1500000-0000-0000-0000-000000000005', 'e1500000-0000-0000-0000-000000000001', 5, 'Classify & Decide Remediation', 'Weigh all evidence and classify the root cause and the remediation action. A decision is required to complete this task.', FALSE, 180, 'active')
+ON CONFLICT (id) DO UPDATE SET
+    step_order = EXCLUDED.step_order,
+    name = EXCLUDED.name,
+    description = EXCLUDED.description,
+    is_safety_critical = EXCLUDED.is_safety_critical,
+    expected_duration_seconds = EXCLUDED.expected_duration_seconds,
+    status = EXCLUDED.status,
+    updated_at = CURRENT_TIMESTAMP;
 
 -- 17j. Task → workflow links
 INSERT INTO task_workflows (task_id, workflow_id)

@@ -54,6 +54,21 @@ export function WorkflowStepViewer({
                 ✓ Completed
               </span>
             )}
+            {currentStep.isSafetyCritical && (
+              <span
+                className="badge"
+                style={{
+                  marginLeft: '0.5rem',
+                  fontSize: '0.75rem',
+                  padding: '0.25rem 0.6rem',
+                  background: 'rgba(239, 68, 68, 0.2)',
+                  color: '#f87171',
+                  fontWeight: 800,
+                }}
+              >
+                ⚠️ SAFETY CRITICAL — Verify Before Proceeding
+              </span>
+            )}
           </h1>
         </div>
         <div style={{ textAlign: 'right' }}>

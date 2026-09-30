@@ -116,6 +116,30 @@ step executions, a completed assignment, and a persisted `task_results` row
 (classification `pretreatment_contamination`, duration computed from the
 stored timestamps).
 
+### Phase 10 — each organization's job is genuinely different
+
+Each investigation job is a multi-step digital workflow (5 steps ending in a
+classification/decision step) whose structure, step vocabulary, durations and
+checkpoints are specific to the organization's industry — not copies of the
+Acme job. Steps marked **safety-critical** are verification checkpoints where
+industry practice demands a mandatory double-check before a decision; the
+worker UI renders them with a prominent `⚠️ SAFETY CRITICAL — Verify Before
+Proceeding` badge (served from `workflow_steps.is_safety_critical`).
+
+| Organization | Job shape (step 1 → decision) | Safety-critical checkpoint | Step durations (s) | Decision vocabulary |
+|---|---|---|---|---|
+| Acme Motors | batch comparison → quality gates → maintenance history → incidents → root-cause decision | — (desk investigation) | 240/300/240/300/180 | machining/bearing/lubrication/torque/no-fault |
+| MediCare Health Systems | vitals triage → **medication record verification** → lab panel → notes & handover → escalation decision | step 2: Verify Medication Record | 240/300/240/240/180 | infection escalation / medication reaction / device artifact / pain response / stable |
+| Nexa Finance | alert & transaction triage → **customer identity verification** → merchant risk → AML case file → case decision | step 2: Verify Customer Identity & Contact Log (compliance-mandatory) | 240/300/180/240/180 | fraud block / compliance escalation / legitimate / verification required |
+| LogiCore Logistics | baseline shipment comparison → scan-trail reconstruction → inventory reconciliation → customs & driver reports → customer-action decision | — (desk investigation) | 240/300/300/240/180 | dock congestion / customs error / carrier failure / address issue / weather |
+| BrightGrid Energy | sensor analysis → SCADA & outage correlation → **field-crew coordination verification** → asset history → remediation decision | step 3: Verify Field Crew Coordination | 240/300/240/300/180 | tap changer fault / phase-B imbalance / upstream fault / sensor drift |
+
+Each job's evidence draws on that organization's own seeded dataset record
+types (e.g. MediCare: `patient_vitals`, `medication_administration`,
+`lab_result`, `nursing_note`, `shift_handover`), and each organization's
+`decision_options` vocabulary is disjoint from the others. Guarded by
+`backend/tests/test_phase10_jobs.py`.
+
 ## Timezone convention
 
 Task/assignment/result timestamps are stored as timezone-aware UTC

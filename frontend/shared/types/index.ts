@@ -35,6 +35,7 @@ export interface WorkflowStep {
   stepNumber: number;
   title: string;
   instructionText: string;
+  isSafetyCritical?: boolean;
   expectedDurationSeconds?: number;
   spatialTargetId?: string;
   requiredModality?: InteractionMode;
