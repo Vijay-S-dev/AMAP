@@ -116,6 +116,8 @@ class SupervisorInvitePayload(StrictInputModel):
 
 
 class SupervisorUpdatePayload(StrictInputModel):
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    email: Optional[str] = Field(None, min_length=3, max_length=255)
     department_id: Optional[UUID] = None
     status: Optional[str] = None  # active | suspended
 
@@ -135,6 +137,7 @@ class EnterpriseWorkerItem(AMAPBaseModel):
     department_name: Optional[str] = "Unassigned"
     supervisor_name: Optional[str] = "Unassigned"
     status: str  # INVITED | ONBOARDING | READY | WORKING | PAUSED | ASSISTANCE_REQUESTED | OFFLINE | DEACTIVATED
+    account_status: str = "active"  # users.status: active | suspended | archived
     interaction_mode: str = "multimodal"
     training_completed: bool = False
     current_task_name: Optional[str] = None
@@ -153,6 +156,15 @@ class WorkerInvitePayload(StrictInputModel):
         max_length=128,
         description="Initial credential for the invited worker; generated if omitted. Never returned in responses.",
     )
+
+
+class WorkerUpdatePayload(StrictInputModel):
+    """Payload for editing an existing worker: identity, badge, department, account status."""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    email: Optional[str] = Field(None, min_length=3, max_length=255)
+    badge_number: Optional[str] = Field(None, max_length=50)
+    department_id: Optional[UUID] = None
+    status: Optional[str] = None  # users.status: active | suspended
 
 
 class WorkerAssignmentPayload(StrictInputModel):

@@ -36,6 +36,7 @@ from models.enterprise_organization import (
     WorkflowCreatePayload,
     WorkflowTemplate,
     WorkflowUpdatePayload,
+    WorkerUpdatePayload,
 )
 from services.base import ConflictError, NotFoundError, ValidationError
 from services.organization_management_service import OrganizationManagementService
@@ -321,6 +322,36 @@ def invite_worker(
         )
     except ConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.put(
+    "/workers/{user_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Update worker details",
+)
+def update_worker(
+    user_id: UUID,
+    payload: WorkerUpdatePayload,
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
+    service: OrganizationManagementService = Depends(get_org_management_service),
+) -> Dict[str, Any]:
+    """
+    Update an existing worker: full name, email, badge number, department
+    assignment, and/or account status (deactivate / reactivate).
+    """
+    try:
+        return service.update_worker(
+            organization_id=admin_user.organization_id,
+            user_id=user_id,
+            payload=payload,
+            actor_id=admin_user.user_id,
+        )
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

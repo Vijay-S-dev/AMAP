@@ -28,6 +28,7 @@ from models.enterprise_organization import (
     WorkflowStepItem,
     WorkflowTemplate,
     WorkflowUpdatePayload,
+    WorkerUpdatePayload,
 )
 import secrets
 
@@ -547,6 +548,27 @@ class OrganizationManagementService:
         ):
             raise NotFoundError("User is not a supervisor in this organization.")
 
+        if payload.full_name is not None or payload.email is not None:
+            new_email: Optional[str] = None
+            if payload.email is not None:
+                new_email = payload.email.strip().lower()
+                existing = self.users_repo.get_by_email(organization_id, new_email)
+                if existing and str(existing["id"]) != str(user_id):
+                    raise ConflictError(
+                        f"A user with email '{new_email}' already exists in this organization."
+                    )
+            updated_user = self.users_repo.update_details(
+                user_id=user_id,
+                full_name=payload.full_name,
+                email=new_email,
+            )
+            if not updated_user:
+                raise NotFoundError("Supervisor not found in this organization.")
+            if payload.full_name is not None:
+                changes["full_name"] = payload.full_name
+            if new_email is not None:
+                changes["email"] = new_email
+
         if payload.department_id is not None:
             dept = self.depts_repo.get_by_id(payload.department_id)
             if not dept or dept["organization_id"] != organization_id:
@@ -615,6 +637,7 @@ class OrganizationManagementService:
                 # is the honest value (the previous hardcoded roster invented names).
                 supervisor_name="Unassigned",
                 status=row["lifecycle_status"],
+                account_status=row.get("user_status") or "active",
                 interaction_mode=row.get("interaction_mode") or "multimodal",
                 training_completed=bool(row.get("overall_ready")),
                 current_task_name=row.get("current_task_name"),
@@ -752,6 +775,7 @@ class OrganizationManagementService:
             department_name=dept["name"] if dept else "Unassigned",
             supervisor_name="Unassigned",
             status="INVITED",
+            account_status="active",
             interaction_mode=payload.preferred_modality or "multimodal",
             training_completed=False,
             current_task_name=None,
@@ -761,6 +785,96 @@ class OrganizationManagementService:
     # =========================================================================
     # 6. Enterprise Workflows & Task Templates (§ 14, § 16)
     # =========================================================================
+
+    def update_worker(
+        self,
+        organization_id: UUID,
+        user_id: UUID,
+        payload: WorkerUpdatePayload,
+        actor_id: UUID,
+    ) -> Dict[str, Any]:
+        """
+        Apply real worker updates: identity (full name / email), badge number,
+        department reassignment, and/or account status. All changes persist in
+        PostgreSQL and are recorded in the organization audit trail.
+        """
+        changes: Dict[str, Any] = {}
+
+        if not payload.model_dump(exclude_unset=True):
+            raise ValidationError("No changes supplied.")
+
+        user = self.users_repo.get_by_id(user_id)
+        if not user or user["organization_id"] != organization_id:
+            raise NotFoundError("Worker not found in this organization.")
+
+        worker_role = self.roles_repo.get_by_name("worker")
+        role_links = self.user_roles_repo.get_by_user_id(user_id)
+        if not worker_role or not any(
+            link["role_id"] == worker_role["id"] for link in role_links
+        ):
+            raise NotFoundError("User is not a worker in this organization.")
+
+        if payload.full_name is not None or payload.email is not None:
+            new_email: Optional[str] = None
+            if payload.email is not None:
+                new_email = payload.email.strip().lower()
+                existing = self.users_repo.get_by_email(organization_id, new_email)
+                if existing and str(existing["id"]) != str(user_id):
+                    raise ConflictError(
+                        f"A user with email '{new_email}' already exists in this organization."
+                    )
+            updated_user = self.users_repo.update_details(
+                user_id=user_id,
+                full_name=payload.full_name,
+                email=new_email,
+            )
+            if not updated_user:
+                raise NotFoundError("Worker not found in this organization.")
+            if payload.full_name is not None:
+                changes["full_name"] = payload.full_name
+            if new_email is not None:
+                changes["email"] = new_email
+
+        if payload.badge_number is not None:
+            updated_profile = self.workers_repo.update_badge(
+                user_id=user_id, badge_number=payload.badge_number
+            )
+            if not updated_profile:
+                raise NotFoundError("Worker profile not found for this user.")
+            changes["badge_number"] = payload.badge_number
+
+        if payload.department_id is not None:
+            dept = self.depts_repo.get_by_id(payload.department_id)
+            if not dept or dept["organization_id"] != organization_id:
+                raise NotFoundError("Department not found in this organization.")
+            for link in self.user_departments_repo.get_by_user_id(user_id):
+                self.user_departments_repo.delete(
+                    user_id=user_id, department_id=link["department_id"]
+                )
+            self.user_departments_repo.create(
+                user_id=user_id, department_id=dept["id"]
+            )
+            changes["department_id"] = str(dept["id"])
+
+        if payload.status is not None:
+            if payload.status not in ("active", "suspended"):
+                raise ValidationError("status must be 'active' or 'suspended'.")
+            self.users_repo.update_status(user_id=user_id, status=payload.status)
+            changes["status"] = payload.status
+
+        self.audit_repo.create(
+            organization_id=organization_id,
+            actor_user_id=actor_id,
+            event_type="worker.updated",
+            resource_type="user",
+            resource_id=user_id,
+            event_data=changes,
+        )
+        return {
+            "message": "Worker details successfully updated.",
+            "user_id": str(user_id),
+            "changes": changes,
+        }
 
     def _workflow_item(self, wf_row: Dict[str, Any]) -> WorkflowTemplate:
         """Build a WorkflowTemplate response from database rows."""

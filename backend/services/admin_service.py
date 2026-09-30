@@ -289,6 +289,54 @@ class AdminService:
         )
         return UserRead.model_validate(updated)
 
+    def update_user_details(
+        self,
+        user_id: UUID,
+        organization_id: UUID,
+        full_name: Optional[str],
+        email: Optional[str],
+        actor_id: UUID,
+    ) -> UserRead:
+        """Update a user's identity details (full name / email) within the organization."""
+        if full_name is None and email is None:
+            raise ValidationError("No changes supplied; provide full_name and/or email.")
+
+        user = self.users_repo.get_by_id(user_id)
+        if not user or user["organization_id"] != organization_id:
+            raise NotFoundError("User not found in this organization.")
+
+        new_email: Optional[str] = None
+        if email is not None:
+            new_email = email.strip().lower()
+            existing = self.users_repo.get_by_email(organization_id, new_email)
+            if existing and str(existing["id"]) != str(user_id):
+                raise ConflictError(
+                    f"A user with email '{new_email}' already exists in this organization."
+                )
+
+        updated = self.users_repo.update_details(
+            user_id=user_id, full_name=full_name, email=new_email
+        )
+        if not updated:
+            raise NotFoundError("User not found in this organization.")
+
+        audit_data: Dict[str, Any] = {}
+        if full_name is not None:
+            audit_data["previous_full_name"] = user["full_name"]
+            audit_data["new_full_name"] = full_name
+        if new_email is not None:
+            audit_data["previous_email"] = user["email"]
+            audit_data["new_email"] = new_email
+        self.audit_repo.create(
+            organization_id=organization_id,
+            actor_user_id=actor_id,
+            event_type="user.details_updated",
+            resource_type="user",
+            resource_id=user_id,
+            event_data=audit_data,
+        )
+        return UserRead.model_validate(updated)
+
     def assign_role(
         self,
         user_id: UUID,

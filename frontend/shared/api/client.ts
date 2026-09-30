@@ -892,6 +892,47 @@ class ApiClient {
     });
   }
 
+  async updateOrgWorker(
+    userId: string,
+    payload: {
+      full_name?: string;
+      email?: string;
+      badge_number?: string;
+      department_id?: string;
+      status?: string;
+    }
+  ): Promise<any> {
+    return await this.request(`/organizations/manage/workers/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateOrgSupervisor(
+    userId: string,
+    payload: {
+      full_name?: string;
+      email?: string;
+      department_id?: string;
+      status?: string;
+    }
+  ): Promise<any> {
+    return await this.request(`/organizations/manage/supervisors/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateAdminUser(
+    userId: string,
+    payload: { full_name?: string; email?: string }
+  ): Promise<any> {
+    return await this.request(`/admin/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async getOrgWorkflows(): Promise<any[]> {
     return await this.request<any[]>('/organizations/manage/workflows');
   }

@@ -5,7 +5,7 @@ Provides database access operations for the worker_profiles table.
 Business logic does not belong in this module.
 """
 
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
 from psycopg.rows import dict_row
@@ -72,6 +72,27 @@ class WorkerProfilesRepository:
                 connection.commit()
 
                 return worker_profile
+
+    def update_badge(
+        self,
+        user_id: UUID,
+        badge_number: Optional[str],
+    ) -> dict[str, Any] | None:
+        """Update a worker profile's badge number and return the updated row."""
+        with get_db_connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    UPDATE worker_profiles
+                    SET badge_number = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = %s
+                    RETURNING id, user_id, badge_number, status, created_at, updated_at
+                    """,
+                    (badge_number, user_id),
+                )
+                updated = cursor.fetchone()
+                connection.commit()
+                return updated
 
     def delete_by_id(
         self,

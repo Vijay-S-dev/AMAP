@@ -10,6 +10,8 @@ export function WorkerManagementPanel() {
   const [departments, setDepartments] = useState<any[]>([]);
   const [statusFilter, setStatusFilter] = useState('');
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [editingWorker, setEditingWorker] = useState<any | null>(null);
+  const [busyUserId, setBusyUserId] = useState<string | null>(null);
 
   // Invite Form
   const [email, setEmail] = useState('');
@@ -18,6 +20,13 @@ export function WorkerManagementPanel() {
   const [departmentId, setDepartmentId] = useState('');
   const [preferredModality, setPreferredModality] = useState('multimodal');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Edit Form (existing worker)
+  const [editFullName, setEditFullName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editBadge, setEditBadge] = useState('');
+  const [editDept, setEditDept] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -60,6 +69,57 @@ export function WorkerManagementPanel() {
       playAudioCue('alert');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const openEditModal = (w: any) => {
+    setEditingWorker(w);
+    setEditFullName(w.full_name || '');
+    setEditEmail(w.email || '');
+    setEditBadge(w.badge_number || '');
+    setEditDept(w.department_id || '');
+  };
+
+  const handleUpdateWorker = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingWorker) return;
+    setIsSavingEdit(true);
+    try {
+      await api.updateOrgWorker(editingWorker.user_id, {
+        full_name: editFullName.trim() || undefined,
+        email: editEmail.trim() || undefined,
+        badge_number: editBadge.trim() || undefined,
+        department_id: editDept || undefined,
+      });
+      announce(`Worker ${editFullName || editingWorker.full_name} updated.`);
+      playAudioCue('confirm');
+      setEditingWorker(null);
+      loadData();
+    } catch (err: any) {
+      announce(`Update failed: ${err?.message || 'server error'}`);
+      playAudioCue('alert');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleToggleAccountStatus = async (w: any) => {
+    const nextStatus = w.account_status === 'suspended' ? 'active' : 'suspended';
+    setBusyUserId(w.user_id);
+    try {
+      await api.updateOrgWorker(w.user_id, { status: nextStatus });
+      announce(
+        nextStatus === 'suspended'
+          ? `Account ${w.email} deactivated — login is now blocked.`
+          : `Account ${w.email} reactivated.`
+      );
+      playAudioCue(nextStatus === 'suspended' ? 'alert' : 'confirm');
+      loadData();
+    } catch (err: any) {
+      announce(`Status change failed: ${err?.message || 'server error'}`);
+      playAudioCue('alert');
+    } finally {
+      setBusyUserId(null);
     }
   };
 
@@ -147,6 +207,7 @@ export function WorkerManagementPanel() {
               <th style={{ padding: '1rem 1.25rem', fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Interaction Modality</th>
               <th style={{ padding: '1rem 1.25rem', fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Current Assignment</th>
               <th style={{ padding: '1rem 1.25rem', fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Operational Status</th>
+              <th style={{ padding: '1rem 1.25rem', fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Account / Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -157,8 +218,8 @@ export function WorkerManagementPanel() {
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{w.email}</div>
                 </td>
                 <td style={{ padding: '1rem 1.25rem', fontSize: '0.9rem' }}>
-                  <div style={{ fontWeight: 600 }}>{w.badge_number || 'WRK-1048'}</div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{w.department_name || 'Powertrain & Gearbox Integration'}</div>
+                  <div style={{ fontWeight: 600 }}>{w.badge_number || '—'}</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{w.department_name || 'Unassigned'}</div>
                 </td>
                 <td style={{ padding: '1rem 1.25rem' }}>
                   <span style={{ fontSize: '0.85rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -179,6 +240,43 @@ export function WorkerManagementPanel() {
                 </td>
                 <td style={{ padding: '1rem 1.25rem' }}>
                   {getStatusBadge(w.status)}
+                </td>
+                <td style={{ padding: '1rem 1.25rem' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'flex-start' }}>
+                    <span
+                      aria-label={`Account status: ${w.account_status || 'active'}`}
+                      style={{
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        padding: '0.25rem 0.6rem',
+                        borderRadius: '20px',
+                        backgroundColor: w.account_status === 'active' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                        color: w.account_status === 'active' ? '#34d399' : '#f87171',
+                      }}
+                    >
+                      {w.account_status === 'active' ? '● Active' : '⏸ Deactivated'}
+                    </span>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => openEditModal(w)}
+                        style={{ minHeight: '40px', padding: '0 0.9rem', fontSize: '0.8rem' }}
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={busyUserId === w.user_id}
+                        onClick={() => handleToggleAccountStatus(w)}
+                        aria-label={w.account_status === 'active' ? `Deactivate account ${w.email}` : `Reactivate account ${w.email}`}
+                        style={{ minHeight: '40px', padding: '0 0.9rem', fontSize: '0.8rem' }}
+                      >
+                        {busyUserId === w.user_id ? '…' : w.account_status === 'active' ? '⏸️ Deactivate' : '▶️ Reactivate'}
+                      </button>
+                    </div>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -308,6 +406,117 @@ export function WorkerManagementPanel() {
                   style={{ minHeight: '48px', padding: '0 1.5rem', background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)' }}
                 >
                   {isSubmitting ? 'Sending...' : 'Send Onboarding Invite'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Worker Modal Dialog */}
+      {editingWorker && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="worker-edit-modal-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '1rem',
+          }}
+        >
+          <div className="glass-panel" style={{ width: '100%', maxWidth: '520px', padding: '2rem', borderRadius: '24px' }}>
+            <h3 id="worker-edit-modal-title" style={{ fontSize: '1.3rem', fontWeight: 800, marginBottom: '0.5rem' }}>
+              ✏️ Edit Worker
+            </h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
+              Update identity, badge, and department for {editingWorker.full_name}. Changes persist immediately in PostgreSQL.
+            </p>
+
+            <form onSubmit={handleUpdateWorker} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                  Full Name
+                </label>
+                <input
+                  type="text"
+                  className="input-field"
+                  value={editFullName}
+                  onChange={(e) => setEditFullName(e.target.value)}
+                  required
+                  style={{ width: '100%', minHeight: '48px' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  className="input-field"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  required
+                  style={{ width: '100%', minHeight: '48px' }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                    Badge Number
+                  </label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    value={editBadge}
+                    onChange={(e) => setEditBadge(e.target.value)}
+                    style={{ width: '100%', minHeight: '48px' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                    Department
+                  </label>
+                  <select
+                    className="input-field"
+                    value={editDept}
+                    onChange={(e) => setEditDept(e.target.value)}
+                    style={{ width: '100%', minHeight: '48px' }}
+                  >
+                    <option value="">Unassigned</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setEditingWorker(null)}
+                  style={{ minHeight: '48px', padding: '0 1.25rem' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={isSavingEdit}
+                  style={{ minHeight: '48px', padding: '0 1.5rem', background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)' }}
+                >
+                  {isSavingEdit ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
             </form>

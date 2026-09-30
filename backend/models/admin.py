@@ -15,6 +15,12 @@ class UserStatusUpdatePayload(StrictInputModel):
     reason: Optional[str] = Field(None, max_length=500, description="Reason for status change")
 
 
+class UserDetailUpdatePayload(StrictInputModel):
+    """Payload to update a user's identity details (full name / email)."""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255, description="New full name")
+    email: Optional[str] = Field(None, min_length=3, max_length=255, description="New email address (organization-unique)")
+
+
 class UserRoleAssignPayload(StrictInputModel):
     """Payload to assign a role to an organization user."""
     role_name: str = Field(..., min_length=1, max_length=100, description="Name of role to assign")

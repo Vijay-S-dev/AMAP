@@ -20,6 +20,7 @@ from app.dependencies import require_permissions, require_roles
 from models.admin import (
     UserRoleAssignPayload,
     UserStatusUpdatePayload,
+    UserDetailUpdatePayload,
 )
 from models.audit import AuditEventRead
 from models.auth import AuthenticatedUserContext
@@ -231,6 +232,35 @@ def update_user_status(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.put(
+    "/users/{user_id}",
+    response_model=UserRead,
+    status_code=status.HTTP_200_OK,
+    summary="Update user identity details",
+)
+def update_user_details(
+    user_id: UUID,
+    payload: UserDetailUpdatePayload,
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    service: AdminService = Depends(get_admin_service),
+) -> UserRead:
+    """Update a user's full name and/or email (organization-unique) and record an audit log."""
+    try:
+        return service.update_user_details(
+            user_id=user_id,
+            organization_id=admin_user.organization_id,
+            full_name=payload.full_name,
+            email=payload.email,
+            actor_id=admin_user.user_id,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.post(

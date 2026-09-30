@@ -5,7 +5,7 @@ Provides database access operations for the users table.
 Business logic does not belong in this module.
 """
 
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
 from psycopg.rows import dict_row
@@ -172,6 +172,39 @@ class UsersRepository:
                               status, created_at, updated_at
                     """,
                     (status, user_id),
+                )
+                updated = cursor.fetchone()
+                connection.commit()
+                return updated
+
+    def update_details(
+        self,
+        user_id: UUID,
+        full_name: Optional[str] = None,
+        email: Optional[str] = None,
+    ) -> dict[str, Any] | None:
+        """Update a user's identity details (full name / email) and return the updated row."""
+        updates: list[str] = []
+        params: list[Any] = []
+        if full_name is not None:
+            updates.append("full_name = %s")
+            params.append(full_name)
+        if email is not None:
+            updates.append("email = %s")
+            params.append(email)
+        if not updates:
+            return self.get_by_id(user_id)
+        with get_db_connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE users
+                    SET {", ".join(updates)}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    RETURNING id, organization_id, email, full_name, password_hash,
+                              status, created_at, updated_at
+                    """,
+                    (*params, user_id),
                 )
                 updated = cursor.fetchone()
                 connection.commit()
