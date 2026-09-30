@@ -27,6 +27,8 @@ reuse them anywhere real.
 
 Log in at the login page with the organization, email, and password below.
 
+### Primary accounts
+
 | Organization | Role | Email | Password |
 |---|---|---|---|
 | Acme Motors — Assembly Plant 1 | Admin | `admin@amap.com` | `SecurePassword123!` |
@@ -45,8 +47,30 @@ Log in at the login page with the organization, email, and password below.
 | BrightGrid Energy | Supervisor | `supervisor1@brightgrid-energy.com` | `SecurePassword123!` |
 | BrightGrid Energy | Worker | `worker1@brightgrid-energy.com` | `SecurePassword123!` |
 
-Each organization also has a second supervisor (`supervisor2@…`) and two
-more workers (`worker2@…`, `worker3@…`) with the same password.
+### Scaled workforce (Phase 6)
+
+Every organization is seeded with **6 supervisors, 16 workers, and 1
+admin** (115 users total). The scaled accounts follow deterministic email
+patterns — all use the same password `SecurePassword123!`:
+
+| Organization | Supervisors | Workers |
+|---|---|---|
+| Acme Motors | `supervisor@amap.com`, `supervisor2@amap.com` … `supervisor6@amap.com` | `alex.worker@amap.com`, `jordan.worker@amap.com`, `maria.newhire@amap.com`, `worker4@amap.com` … `worker16@amap.com` |
+| MediCare | `supervisor1@medicare-health.com` … `supervisor6@medicare-health.com` | `worker1@medicare-health.com` … `worker16@medicare-health.com` |
+| Nexa Finance | `supervisor1@nexafinance.com` … `supervisor6@nexafinance.com` | `worker1@nexafinance.com` … `worker16@nexafinance.com` |
+| LogiCore Logistics | `supervisor1@logicore-logistics.com` … `supervisor6@logicore-logistics.com` | `worker1@logicore-logistics.com` … `worker16@logicore-logistics.com` |
+| BrightGrid Energy | `supervisor1@brightgrid-energy.com` … `supervisor6@brightgrid-energy.com` | `worker1@brightgrid-energy.com` … `worker16@brightgrid-energy.com` |
+
+**Suspended demo accounts** (for demonstrating inactive-account behavior):
+`supervisor6@…` and `worker16@…` in every organization are seeded with
+status `suspended` — their login is blocked (401) until an admin
+reactivates them through the worker/supervisor management panel or
+`PUT /organizations/manage/workers/{id}`.
+
+Seeded users are byte-for-byte equivalent to users created through the
+CRUD invitation APIs (same tables, same PBKDF2 hashing format, same role
+and readiness defaults) — verified field-by-field against an API-invited
+user.
 
 ## Seeded sample datasets (synthetic)
 

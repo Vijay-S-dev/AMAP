@@ -165,15 +165,16 @@ def test_list_workers_returns_real_rows_not_hardcoded_roster(
     fabricated = {"samira.chen@amap.com", "kenji.sato@amap.com"}
     assert not fabricated & set(emails), "hardcoded fake roster leaked into response"
 
-    # Total must match the actual PostgreSQL worker-profile count for this org
+    # Total must match the actual PostgreSQL worker-profile count for this org.
+    # The directory intentionally lists ALL workers — including suspended
+    # accounts (lifecycle DEACTIVATED) so admins can reactivate them — so the
+    # reference query mirrors the directory's own FROM/JOIN/WHERE exactly.
     db_count = _pg(
         """
         SELECT COUNT(*)
         FROM worker_profiles wp
         JOIN users u ON u.id = wp.user_id
         WHERE u.organization_id = %s
-          AND u.status NOT IN ('archived', 'suspended', 'inactive')
-          AND wp.status = 'active'
         """,
         (ORG_A,),
     )[0][0]
