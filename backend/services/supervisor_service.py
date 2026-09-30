@@ -583,6 +583,10 @@ class SupervisorService:
         worker_user = self.users_repo.get_by_id(worker_profile["user_id"])
         if not worker_user or worker_user.get("organization_id") != organization_id:
             raise UnauthorizedError("Access denied: Worker belongs to another organization.")
+        if (worker_user.get("status") or "active") != "active":
+            raise ConflictError(
+                f"Worker account is '{worker_user.get('status')}' and cannot receive new assignments."
+            )
 
         # 3. Create task assignment
         assignment = self.worker_task_assignments_repo.create(

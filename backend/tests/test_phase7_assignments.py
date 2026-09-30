@@ -673,3 +673,25 @@ def test_assignable_tasks_list_is_org_scoped(client, phase7_task):
     )
     db_ids = {str(r[0]) for r in rows}
     assert set(ids) <= db_ids, "list must not contain fabricated tasks"
+
+
+def test_assignment_rejected_for_suspended_worker(client, phase7_task):
+    """Phase 9: assigning to a deactivated (suspended) account is rejected
+    server-side with 409 and no assignment row is created."""
+    sup_token = _login(client, "supervisor@amap.com")
+    jordan_user = _pg(
+        "SELECT user_id FROM worker_profiles WHERE id = %s", (JORDAN,)
+    )[0][0]
+    _pg("UPDATE users SET status = 'suspended' WHERE id = %s", (jordan_user,))
+    try:
+        res = _assign(client, sup_token, phase7_task["task_id"], JORDAN)
+        assert res.status_code == status.HTTP_409_CONFLICT, res.text
+        body = res.json()
+        assert "suspended" in (body.get("error") or body.get("detail") or ""), body
+        rows = _pg(
+            "SELECT id FROM worker_task_assignments WHERE task_id = %s",
+            (phase7_task["task_id"],),
+        )
+        assert rows == []
+    finally:
+        _pg("UPDATE users SET status = 'active' WHERE id = %s", (jordan_user,))
