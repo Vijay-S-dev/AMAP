@@ -102,6 +102,15 @@ export default function WorkerPage() {
   const [assignmentId, setAssignmentId] = useState<string | null>(null);
   const [assignmentStatus, setAssignmentStatus] = useState<string | null>(null);
   const [workflowAssignmentId, setWorkflowAssignmentId] = useState<string | null>(null);
+  /**
+   * Ref mirror of workflowAssignmentId. The bootstrap effect can run twice
+   * in development (React StrictMode) and a racing run that fetched the
+   * assignment list BEFORE the workflow assignment existed would otherwise
+   * clobber a good id with null. The ref is only ever written with a
+   * non-null value, and the step handlers read it first — persistence can
+   * never be silently skipped because a stale bootstrap resolved to null.
+   */
+  const workflowAssignmentIdRef = useRef<string | null>(null);
   /** Full current assignment row (timestamps for IST display). */
   const [currentAssignment, setCurrentAssignment] = useState<any | null>(null);
   /** All of this worker's assignments (personal dashboard counts). */
@@ -358,7 +367,8 @@ export default function WorkerPage() {
           console.warn('Assignment start lifecycle notice:', startErr);
         }
       }
-      setWorkflowAssignmentId(currentWfAssignId);
+      if (currentWfAssignId) workflowAssignmentIdRef.current = currentWfAssignId;
+      setWorkflowAssignmentId(workflowAssignmentIdRef.current);
 
       // 6. Fetch task details and workflow steps from backend
       const taskData = await api.getTaskDetails(targetAssignment.task_id);
@@ -617,9 +627,10 @@ export default function WorkerPage() {
       }
 
       // Step 2: Persist Step Execution to Database
-      if (workflowAssignmentId) {
+      const nextWfaId = workflowAssignmentIdRef.current || workflowAssignmentId;
+      if (nextWfaId) {
         setStatusMessage(`Saving Step ${currentStep.stepNumber} completion to backend...`);
-        await api.recordStepExecution(workflowAssignmentId, currentStep.id, {
+        await api.recordStepExecution(nextWfaId, currentStep.id, {
           status: 'completed',
           execution_data: {
             step_number: currentStep.stepNumber,
@@ -697,8 +708,9 @@ export default function WorkerPage() {
     setExecutionError(null);
     try {
       // 1. Persist the step completion
-      if (workflowAssignmentId) {
-        await api.recordStepExecution(workflowAssignmentId, currentStep.id, {
+      const completeWfaId = workflowAssignmentIdRef.current || workflowAssignmentId;
+      if (completeWfaId) {
+        await api.recordStepExecution(completeWfaId, currentStep.id, {
           status: 'completed',
           execution_data: {
             step_number: currentStep.stepNumber,
@@ -972,7 +984,10 @@ export default function WorkerPage() {
           try {
             const started = await api.startTaskAssignment(assignmentId);
             setAssignmentStatus(started?.status || 'in_progress');
-            if (started?.workflow_assignment_id) setWorkflowAssignmentId(started.workflow_assignment_id);
+            if (started?.workflow_assignment_id) {
+              workflowAssignmentIdRef.current = started.workflow_assignment_id;
+              setWorkflowAssignmentId(started.workflow_assignment_id);
+            }
             setStatusMessage('▶️ Assignment started and persisted.');
             playAudioCue('confirm');
           } catch (err: any) {

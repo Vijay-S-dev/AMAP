@@ -25,6 +25,7 @@ try {
       join(frontendRoot, 'node_modules', 'typescript', 'bin', 'tsc'),
       'tests/gesture-engine.test.ts',
       'tests/voice-worklet.test.ts',
+      'tests/route-access.test.ts',
       '--outDir', outDir,
       '--module', 'commonjs',
       '--target', 'es2020',
@@ -42,6 +43,10 @@ try {
     stdio: 'inherit',
   });
   execFileSync(process.execPath, [join(outDir, 'tests', 'voice-worklet.test.js')], {
+    cwd: frontendRoot,
+    stdio: 'inherit',
+  });
+  execFileSync(process.execPath, [join(outDir, 'tests', 'route-access.test.js')], {
     cwd: frontendRoot,
     stdio: 'inherit',
   });

@@ -16,7 +16,14 @@ async function login(page, org, email) {
   await page.type('#email-input', email);
   await page.type('#password-input', PW);
   await page.click('button[type="submit"]');
-  await page.waitForFunction(() => !window.location.href.includes('/login'), { timeout: 60000 });
+  // Poll the URL (no in-page function -> immune to execution-context
+  // destruction during the post-login redirect).
+  const t0 = Date.now();
+  while (Date.now() - t0 < 60000) {
+    if (!page.url().includes('/login')) break;
+    await wait(500);
+  }
+  if (page.url().includes('/login')) throw new Error('login redirect did not happen for ' + email);
   await wait(2500);
 }
 
@@ -30,6 +37,11 @@ async function login(page, org, email) {
 
   // ---- 1. LogiCore worker: FULL lifecycle through the real UI ----
   let page = await browser.newPage();
+  // Navigation tracer: logs every main-frame navigation (diagnosing
+  // 'Execution context was destroyed' / detached-frame races in dev mode).
+  page.on('framenavigated', (f) => {
+    if (f === page.mainFrame()) console.log('[nav]', new Date().toISOString().slice(11, 19), f.url());
+  });
   await page.setViewport({ width: 1400, height: 2400 });
   page.on('pageerror', (e) => console.log('PAGEERROR:', e.message.slice(0, 150)));
   await login(page, 'aa100000-0000-0000-0000-000000000004', 'worker1@logicore-logistics.com');
@@ -81,13 +93,18 @@ async function login(page, org, email) {
       if (next && next.asElement()) { await next.asElement().click(); await wait(1600); }
     }
   }
-  // retry the final step's completion until the backend confirms (badge shows)
-  for (let r = 0; r < 6; r++) {
-    const done = await page.evaluate(() => document.body.innerText.includes('already completed') || /Step 5 of 5[^]*✓ Completed/.test(document.body.innerText));
-    if (done) break;
-    const again = await page.evaluateHandle(() => [...document.querySelectorAll('button')].find(e => /complete step/i.test(e.textContent)));
-    if (again && again.asElement()) { await again.asElement().click(); }
-    await wait(1500);
+  // Retry the final step's completion until the BACKEND confirms it
+  // ('saved to PostgreSQL' status message — the only authoritative signal).
+  for (let r = 0; r < 8; r++) {
+    const persisted = await page.evaluate(() =>
+      document.body.innerText.includes('saved to PostgreSQL')
+    );
+    if (persisted) break;
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('button')].find(e => /complete step/i.test(e.textContent));
+      if (btn) btn.click();
+    });
+    await wait(1800);
   }
   await wait(2500);
   let body2 = await page.evaluate(() => document.body.innerText);
@@ -102,9 +119,16 @@ async function login(page, org, email) {
   const endWork = await page.evaluateHandle(() => [...document.querySelectorAll('button')].find(e => /end work|finish assignment/i.test(e.textContent)));
   if (endWork && endWork.asElement()) { await endWork.asElement().click(); await wait(2500); }
   await page.waitForFunction(() => document.body.innerText.includes('Task Completed Successfully'), { timeout: 30000 });
-  let body3 = await page.evaluate(() => document.body.innerText);
-  check('completion dialog after End Work', body3.includes('Task Completed Successfully'));
-  check('REBRAND/IST: completion message + IST timestamp', /\d{1,2} \w+ \d{4}, .*IST/.test(body3), (body3.match(/\d{1,2} \w+ \d{4}, [^\n]*IST/) || [''])[0]);
+  const dlgTxt = await page.evaluate(() => {
+    const d = document.querySelector('[role="dialog"]');
+    return d ? d.innerText : '';
+  });
+  check('completion dialog after End Work', dlgTxt.includes('Task Completed Successfully'));
+  check(
+    'completion message + IST completion timestamp (dialog)',
+    /\d{1,2} \w+ \d{4}, .*IST/.test(dlgTxt),
+    (dlgTxt.match(/\d{1,2} \w+ \d{4}, [^\n]*IST/) || [''])[0]
+  );
 
   // Persistence: reload -> completed state restored
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -154,8 +178,108 @@ async function login(page, org, email) {
   check('IST timestamps shown', /IST/.test(adm));
   await page.close();
 
+  // ---- 5. Role-aware navigation + route guards (worker / supervisor / admin) ----
+  // Evaluations can transiently fail with 'Execution context was destroyed'
+  // when the SPA navigates mid-call (Next.js RSC redirect / full reload).
+  // Retry them instead of aborting the whole journey.
+  const safeEval = async (fn) => {
+    let lastErr;
+    for (let i = 0; i < 4; i++) {
+      try { return await page.evaluate(fn); }
+      catch (e) {
+        lastErr = e;
+        if (/destroyed|detached/i.test(e.message)) { await wait(1500); continue; }
+        throw e;
+      }
+    }
+    throw lastErr;
+  };
+  // Logout helper (role switch must update the navbar).
+  const logout = async () => {
+    console.log('[e2e] logout');
+    // Click inside the page, DEFERRED by a tick so this evaluate resolves
+    // before the SPA navigation can destroy the execution context.
+    await safeEval(() => {
+      const btn = [...document.querySelectorAll('button')].find(e => /logout/i.test(e.getAttribute('aria-label') || ''));
+      if (btn) setTimeout(() => btn.click(), 0);
+    });
+    const t0 = Date.now();
+    while (Date.now() - t0 < 30000) {
+      if (page.url().includes('/login')) break;
+      await wait(500);
+    }
+    await wait(1200);
+  };
+  const navLabels = () => safeEval(() =>
+    [...document.querySelectorAll('nav[aria-label="Main Navigation"] a')].map(a => a.textContent.trim())
+  );
+  const directUrl = async (path) => {
+    await page.goto(BASE + path, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await wait(2500);
+    return page.url();
+  };
+
+  // Fresh page for the role-switch journey (section 4 closed its page —
+  // evaluating on a closed page throws 'detached Frame').
+  page = await browser.newPage();
+  await page.setViewport({ width: 1400, height: 2000 });
+  page.on('framenavigated', (f) => {
+    if (f === page.mainFrame()) console.log('[nav]', new Date().toISOString().slice(11, 19), f.url());
+  });
+
+  // WORKER (LogiCore)
+  console.log('[e2e] login: worker');
+  await login(page, 'aa100000-0000-0000-0000-000000000004', 'worker1@logicore-logistics.com');
+  await wait(1500);
+  let wNav = await navLabels();
+  check('WORKER nav: station + training visible', wNav.includes('Worker Station') && wNav.includes('Training'), wNav.join(', '));
+  check('WORKER nav: Fleet & Supervisor hidden', !wNav.includes('Fleet & Supervisor'));
+  check('WORKER nav: Admin Studio hidden', !wNav.includes('Admin Studio'));
+  let wUrl = await directUrl('/organization');
+  check('WORKER direct URL /organization blocked', !wUrl.includes('/organization'), wUrl);
+  wUrl = await directUrl('/admin');
+  check('WORKER direct URL /admin blocked', !wUrl.includes('/admin'), wUrl);
+  wUrl = await directUrl('/worker');
+  check('WORKER /worker accessible', wUrl.includes('/worker'), wUrl);
+  wUrl = await directUrl('/training');
+  check('WORKER /training accessible', wUrl.includes('/training'), wUrl);
+
+  // SUPERVISOR (Acme)
+  await logout();
+  console.log('[e2e] login: supervisor');
+  await login(page, '9a61e05d-7a32-4112-9c17-1833d7b42f65', 'supervisor@amap.com');
+  await wait(1500);
+  let sNav = await navLabels();
+  check('SUPERVISOR nav: Fleet & Supervisor visible', sNav.includes('Fleet & Supervisor'), sNav.join(', '));
+  check('SUPERVISOR nav: Admin Studio hidden', !sNav.includes('Admin Studio'));
+  check('SUPERVISOR nav: Worker Station hidden', !sNav.includes('Worker Station'));
+  let sUrl = await directUrl('/organization');
+  check('SUPERVISOR /organization accessible', sUrl.includes('/organization'), sUrl);
+  sUrl = await directUrl('/admin');
+  check('SUPERVISOR direct URL /admin blocked', !sUrl.includes('/admin'), sUrl);
+  sUrl = await directUrl('/worker');
+  check('SUPERVISOR direct URL /worker blocked', !sUrl.includes('/worker'), sUrl);
+
+  // ADMIN (Acme) — role switch must have updated the navbar
+  await logout();
+  console.log('[e2e] login: admin');
+  await login(page, '9a61e05d-7a32-4112-9c17-1833d7b42f65', 'admin@amap.com');
+  await wait(1500);
+  let aNav = await navLabels();
+  check('ADMIN nav: Admin Studio + Fleet visible after role switch', aNav.includes('Admin Studio') && aNav.includes('Fleet & Supervisor'), aNav.join(', '));
+  let aUrl = await directUrl('/admin');
+  check('ADMIN /admin accessible', aUrl.includes('/admin'), aUrl);
+
+  // Overview page: polished rebrand
+  console.log('[e2e] overview');
+  const ovUrl = await directUrl('/');
+  const ov = await safeEval(() => document.body.innerText);
+  check('OVERVIEW: Hybrid Control Interface hero', ov.includes('Hybrid Control Interface'));
+  check('OVERVIEW: capabilities + roles + workflow sections', ov.includes('Platform Capabilities') && ov.includes('User Roles') && ov.includes('How a Job Flows'));
+  check('OVERVIEW: no stale AMAP branding', !/\bAMAP\b/.test(ov));
+
   await browser.close();
   const failed = results.filter(r => !r[0]);
   console.log('\nE2E RESULT: ' + (failed.length === 0 ? 'ALL PASS' : failed.length + ' FAILURES'));
   process.exit(failed.length === 0 ? 0 : 1);
-})().catch(e => { console.error('E2E FATAL:', e.message); process.exit(2); });
+})().catch(e => { console.error('E2E FATAL:', e.message); console.error(e.stack); process.exit(2); });
