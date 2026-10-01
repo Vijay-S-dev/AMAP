@@ -331,7 +331,7 @@ export default function CustomGestureStudioPage() {
         {studioStage === 'configure' && (
           <div className="glass-card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#fff' }}>
-              Step 1: Select Approved AMAP Intent (§ 1)
+              Step 1: Select Approved Hybrid Control Interface Intent (§ 1)
             </h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
               Choose which factory assembly command your custom gesture will trigger:

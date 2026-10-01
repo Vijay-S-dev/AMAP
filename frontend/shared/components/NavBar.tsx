@@ -66,10 +66,10 @@ export function NavBar() {
                 fontSize: '1.1rem',
               }}
             >
-              A
+              HCI
             </div>
             <div>
-              <span style={{ fontSize: '1.25rem', fontWeight: 800, letterSpacing: '-0.02em', color: 'white' }}>AMAP</span>
+              <span style={{ fontSize: '0.95rem', fontWeight: 800, letterSpacing: '-0.02em', color: 'white' }}>Hybrid Control Interface</span>
               <span style={{ display: 'block', fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                 Accessible Multimodal Assembly
               </span>
@@ -148,7 +148,7 @@ export function NavBar() {
               type="button"
               onClick={handleLogout}
               className="btn btn-secondary"
-              aria-label="Log out of AMAP"
+              aria-label="Log out of Hybrid Control Interface"
               style={{ fontSize: '0.85rem', padding: '0.5rem 1rem', minHeight: '48px', display: 'inline-flex', alignItems: 'center' }}
             >
               🚪 Logout

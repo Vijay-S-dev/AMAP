@@ -306,7 +306,7 @@ export function WorkerManagementPanel() {
               ➕ Invite Assembly Worker
             </h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
-              Invite a new hire or returning worker. The worker will be guided through AMAP multimodal gesture & speech calibration.
+              Invite a new hire or returning worker. The worker will be guided through the Hybrid Control Interface multimodal gesture & speech calibration.
             </p>
 
             <form onSubmit={handleInvite} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>

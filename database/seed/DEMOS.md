@@ -1,4 +1,4 @@
-# AMAP Demo Scenarios (Phase 17)
+# Hybrid Control Interface — Demo Scenarios (Phase 17)
 
 All three demos run against the live stack (backend `:8000`, frontend `:3000`)
 with the seeded PostgreSQL database. All passwords are deterministic

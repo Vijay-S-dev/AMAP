@@ -5,7 +5,7 @@ import { AccessibilityProvider } from '@/shared/theme/AccessibilityContext';
 import { ExtensionErrorGuard } from '@/shared/components/ExtensionErrorGuard';
 
 export const metadata: Metadata = {
-  title: 'AMAP — Adaptive Multimodal Assembly Platform',
+  title: 'Hybrid Control Interface — Accessible Multimodal Assembly Platform',
   description:
     'Real-time accessible assembly guidance platform with gesture, voice, and multimodal intent fusion for workers and supervisors.',
 };

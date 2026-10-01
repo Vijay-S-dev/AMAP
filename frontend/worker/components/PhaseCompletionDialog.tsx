@@ -50,11 +50,16 @@ export function PhaseCompletionDialog({ completion, onContinue }: PhaseCompletio
     if (isOpen && completion) {
       // Move focus to the primary action for keyboard / switch users.
       continueRef.current?.focus();
+      // Final completion message — spoken ONLY here, after the backend has
+      // confirmed persistence (task_results row + completed status). The
+      // timestamp is the backend-recorded completion time, displayed in IST.
       announce(
-        `${t('phase_complete_title', language)}. ${tParams('phase_complete_steps', language, {
-          done: completion.completedSteps,
-          total: completion.totalSteps,
-        })}`
+        `${t('phase_complete_title', language)}.` +
+          (completion.completedAt ? ` ${formatIST(completion.completedAt)}.` : '') +
+          ` ${tParams('phase_complete_steps', language, {
+            done: completion.completedSteps,
+            total: completion.totalSteps,
+          })}`
       );
       playAudioCue('confirm');
     }

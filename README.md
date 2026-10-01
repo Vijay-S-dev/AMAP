@@ -1,4 +1,4 @@
-# AMAP: Accessible Multimodal Assembly Platform
+# Hybrid Control Interface (AMAP): Accessible Multimodal Assembly Platform
 > **Enterprise-Grade Cyber-Physical Manufacturing Interface for Workers with Physical and Cognitive Diversities**
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
@@ -10,7 +10,7 @@
 ---
 
 ## 🎯 Architectural Core Invariant
-Every component across the AMAP platform strictly enforces the fundamental architectural principle:
+Every component across the Hybrid Control Interface platform strictly enforces the fundamental architectural principle:
 $$\mathbf{Recognition \neq Intent \neq Authorization \neq Execution}$$
 
 - **Recognition:** Raw optical hand-tracking coordinates or acoustic speech transcription capture physical worker input.
@@ -106,13 +106,13 @@ cd frontend
 npm install
 npm run dev
 ```
-Open `http://localhost:3000` to launch the AMAP Multimodal Suite.
+Open `http://localhost:3000` to launch the Hybrid Control Interface Multimodal Suite.
 
 ---
 
 ## ♿ Accessibility Compliance (WCAG 2.1 AA)
 
-| Standard | AMAP Implementation | Verified By |
+| Standard | Hybrid Control Interface Implementation | Verified By |
 |---|---|---|
 | **Touch Target Size** (2.5.5 / 2.5.8) | `min-height: 48px`, `min-width: 48px` on all interactive elements | `test_wcag_css_design_system_tokens_and_accessibility` |
 | **Focus Visible** (2.4.7) | High-visibility `:focus-visible` outline rings with 3px offset | `test_wcag_css_design_system_tokens_and_accessibility` |

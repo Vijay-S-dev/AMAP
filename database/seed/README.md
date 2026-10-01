@@ -1,4 +1,4 @@
-# AMAP Seed Data & Demo Credentials
+# Hybrid Control Interface (AMAP) — Seed Data & Demo Credentials
 
 This document describes the seeded sample data and the demo accounts for the
 five sample organizations. **All seeded data and accounts are synthetic

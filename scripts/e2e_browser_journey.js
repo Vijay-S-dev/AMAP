@@ -34,6 +34,13 @@ async function login(page, org, email) {
   page.on('pageerror', (e) => console.log('PAGEERROR:', e.message.slice(0, 150)));
   await login(page, 'aa100000-0000-0000-0000-000000000004', 'worker1@logicore-logistics.com');
   check('worker login routes to /worker', page.url().includes('/worker'), page.url());
+  const brand = await page.evaluate(() => ({
+    title: document.title,
+    body: document.body.innerText,
+  }));
+  check('REBRAND: document title', brand.title.includes('Hybrid Control Interface'), brand.title);
+  check('REBRAND: nav brand rendered', brand.body.includes('Hybrid Control Interface'));
+  check('REBRAND: no stale AMAP brand text', !/\bAMAP\b/.test(brand.body));
 
   // My Jobs strip + task + steps render from PostgreSQL
   await page.waitForFunction(() => document.body.innerText.includes('My Jobs'), { timeout: 30000 }).catch(() => {});
@@ -67,12 +74,20 @@ async function login(page, org, email) {
 
   // Complete all 5 steps via "Complete This Step" then advance via "Next Step"
   for (let i = 0; i < 5; i++) {
-    const complete = await page.evaluateHandle(() => [...document.querySelectorAll('button')].find(e => /complete this step/i.test(e.textContent)));
-    if (complete && complete.asElement()) { await complete.asElement().click(); await wait(900); }
+    const complete = await page.evaluateHandle(() => [...document.querySelectorAll('button')].find(e => /complete step/i.test(e.textContent)));
+    if (complete && complete.asElement()) { await complete.asElement().click(); await wait(1400); }
     if (i < 4) {
       const next = await page.evaluateHandle(() => [...document.querySelectorAll('button')].find(e => /next step/i.test(e.textContent)));
-      if (next && next.asElement()) { await next.asElement().click(); await wait(1200); }
+      if (next && next.asElement()) { await next.asElement().click(); await wait(1600); }
     }
+  }
+  // retry the final step's completion until the backend confirms (badge shows)
+  for (let r = 0; r < 6; r++) {
+    const done = await page.evaluate(() => document.body.innerText.includes('already completed') || /Step 5 of 5[^]*✓ Completed/.test(document.body.innerText));
+    if (done) break;
+    const again = await page.evaluateHandle(() => [...document.querySelectorAll('button')].find(e => /complete step/i.test(e.textContent)));
+    if (again && again.asElement()) { await again.asElement().click(); }
+    await wait(1500);
   }
   await wait(2500);
   let body2 = await page.evaluate(() => document.body.innerText);
@@ -86,8 +101,10 @@ async function login(page, org, email) {
   // End Work -> completion
   const endWork = await page.evaluateHandle(() => [...document.querySelectorAll('button')].find(e => /end work|finish assignment/i.test(e.textContent)));
   if (endWork && endWork.asElement()) { await endWork.asElement().click(); await wait(2500); }
+  await page.waitForFunction(() => document.body.innerText.includes('Task Completed Successfully'), { timeout: 30000 });
   let body3 = await page.evaluate(() => document.body.innerText);
-  check('completion dialog after End Work', /complete|congratulations|phase complete/i.test(body3));
+  check('completion dialog after End Work', body3.includes('Task Completed Successfully'));
+  check('REBRAND/IST: completion message + IST timestamp', /\d{1,2} \w+ \d{4}, .*IST/.test(body3), (body3.match(/\d{1,2} \w+ \d{4}, [^\n]*IST/) || [''])[0]);
 
   // Persistence: reload -> completed state restored
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });

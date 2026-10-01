@@ -58,7 +58,7 @@ export default function HomePage() {
       >
         <div style={{ maxWidth: '800px' }}>
           <span className="badge badge-cyan" style={{ marginBottom: '1rem' }}>
-            Adaptive Multimodal Assembly Platform (AMAP)
+            Hybrid Control Interface
           </span>
           <h1 style={{ fontSize: '2.75rem', fontWeight: 800, lineHeight: '1.2', letterSpacing: '-0.03em', color: 'white' }}>
             Accessible Real-Time Industrial Assembly Guidance

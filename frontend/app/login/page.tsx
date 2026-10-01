@@ -132,7 +132,7 @@ function LoginForm() {
             setHasCompletedVoiceSetup(false);
             setHasCompletedTraining(false);
 
-            announce('Welcome to AMAP! Starting first-time worker onboarding.');
+            announce('Welcome to Hybrid Control Interface! Starting first-time worker onboarding.');
             window.location.href = '/onboarding/language';
             return;
           } else {
@@ -348,7 +348,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div style={{ padding: '4rem', textAlign: 'center', color: '#fff' }}>Loading AMAP Login...</div>}>
+    <Suspense fallback={<div style={{ padding: '4rem', textAlign: 'center', color: '#fff' }}>Loading Hybrid Control Interface Login...</div>}>
       <LoginForm />
     </Suspense>
   );

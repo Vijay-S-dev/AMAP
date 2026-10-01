@@ -161,7 +161,7 @@ export function rightClick(x: number, y: number): ExecutedActionResult {
     ok: true,
     action: 'right_click',
     target: describeElement(target),
-    detail: consumed ? 'contextmenu consumed by element handler' : 'AMAP context menu opened',
+    detail: consumed ? 'contextmenu consumed by element handler' : 'Hybrid Control Interface context menu opened',
   };
 }
 

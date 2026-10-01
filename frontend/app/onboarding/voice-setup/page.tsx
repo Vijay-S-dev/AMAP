@@ -294,7 +294,7 @@ export default function VoiceSetupPage() {
               Microphone Access Required
             </h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', maxWidth: '500px', margin: '0 auto 1.5rem auto' }}>
-              AMAP needs access to your microphone to recognize acoustic assembly commands in real time.
+              Hybrid Control Interface needs access to your microphone to recognize acoustic commands in real time.
             </p>
             <button
               type="button"

@@ -1,6 +1,6 @@
-# AMAP Voice Architecture — Vosk Streaming (single engine)
+# Hybrid Control Interface (AMAP) Voice Architecture — Vosk Streaming (single engine)
 
-AMAP has exactly **one** speech-recognition engine: **Vosk** (offline,
+Hybrid Control Interface has exactly **one** speech-recognition engine: **Vosk** (offline,
 streaming, free-form). The previous faster-whisper batch pipeline was removed
 completely (see `VOSK_VOICE_FEASIBILITY_REPORT.md` for the investigation that
 led to this decision).
