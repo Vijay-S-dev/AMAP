@@ -180,3 +180,14 @@ export function navLinksForRoles(roles: string[] | null | undefined): NavItem[] 
 
   return links;
 }
+
+/**
+ * Whether a nav tab should render as the CURRENT page (aria-current="page").
+ * The Overview tab ("/") is active only on the exact root; every other tab
+ * stays active on its sub-routes so deep links such as /onboarding/language,
+ * /training/safety or /organization/workers keep their section highlighted.
+ */
+export function isNavLinkActive(href: string, pathname: string): boolean {
+  if (href === '/') return pathname === '/';
+  return pathname === href || pathname.startsWith(href + '/');
+}

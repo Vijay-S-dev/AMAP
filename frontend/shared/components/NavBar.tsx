@@ -22,6 +22,7 @@ import { SUPPORTED_LANGUAGES, SupportedLanguage } from '@/shared/i18n/languages'
 import { api } from '@/shared/api/client';
 import {
   decodeTokenPayload,
+  isNavLinkActive,
   isPayloadActive,
   navLinksForRoles,
 } from '@/shared/auth/routeAccess';
@@ -96,7 +97,7 @@ export function NavBar() {
             </span>
           ) : (
             navLinks.map((link) => {
-              const isActive = pathname === link.href;
+              const isActive = isNavLinkActive(link.href, pathname);
               return (
                 <Link
                   key={link.href}

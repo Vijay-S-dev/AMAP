@@ -9,6 +9,8 @@
  *  - Admin sees/reaches fleet + admin routes.
  *  - Unauthenticated users get no authenticated destinations in the navbar.
  *  - Expired or malformed tokens resolve to the unauthenticated state.
+ *  - Current-page highlighting: exact root for Overview, prefix-aware for
+ *    section tabs (sub-routes keep their tab highlighted).
  *
  * Run via: node scripts/run-engine-tests.mjs  (compiles with tsc first)
  */
@@ -16,6 +18,7 @@
 import {
   decodeTokenPayload,
   isPathAllowedForRoles,
+  isNavLinkActive,
   landingPathForRoles,
   navLinksForRoles,
   isPayloadActive,
@@ -164,10 +167,36 @@ function testTokenDecoding(): void {
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 5. Current-page highlighting (navbar aria-current)
+// ---------------------------------------------------------------------------
+function testActiveLinkHighlighting(): void {
+  const cases: Array<{ href: string; pathname: string; active: boolean; note?: string }> = [
+    { href: '/', pathname: '/', active: true },
+    { href: '/', pathname: '/worker', active: false, note: 'Overview only active on exact root' },
+    { href: '/worker', pathname: '/worker', active: true },
+    { href: '/worker', pathname: '/worker/detail', active: true, note: 'sub-route highlights its tab' },
+    { href: '/onboarding', pathname: '/onboarding/language', active: true, note: 'sub-route highlights its tab' },
+    { href: '/training', pathname: '/training/safety', active: true, note: 'sub-route highlights its tab' },
+    { href: '/organization', pathname: '/organization/workers', active: true, note: 'sub-route highlights its tab' },
+    { href: '/admin', pathname: '/admin/users', active: true, note: 'sub-route highlights its tab' },
+    { href: '/worker', pathname: '/workerly', active: false, note: 'no false prefix match' },
+    { href: '/worker', pathname: '/training', active: false, note: 'sibling tab not active' },
+    { href: '/organization', pathname: '/admin', active: false, note: 'sibling tab not active' },
+  ];
+  for (const c of cases) {
+    assert(
+      isNavLinkActive(c.href, c.pathname) === c.active,
+      `isNavLinkActive(${JSON.stringify(c.href)}, ${JSON.stringify(c.pathname)}) should be ${c.active}${c.note ? ` (${c.note})` : ''}`
+    );
+  }
+}
+
 testRouteMatrix();
 testNavMatrix();
 testLandingPaths();
 testTokenDecoding();
+testActiveLinkHighlighting();
 
 console.log('=========================================================');
 if (failed > 0) {

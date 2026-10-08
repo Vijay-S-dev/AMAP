@@ -213,6 +213,10 @@ async function login(page, org, email) {
   const navLabels = () => safeEval(() =>
     [...document.querySelectorAll('nav[aria-label="Main Navigation"] a')].map(a => a.textContent.trim())
   );
+  const navCurrent = () => safeEval(() => {
+    const a = document.querySelector('nav[aria-label="Main Navigation"] a[aria-current="page"]');
+    return a ? a.textContent.trim() : '(none)';
+  });
   const directUrl = async (path) => {
     await page.goto(BASE + path, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await wait(2500);
@@ -235,6 +239,7 @@ async function login(page, org, email) {
   check('WORKER nav: station + training visible', wNav.includes('Worker Station') && wNav.includes('Training'), wNav.join(', '));
   check('WORKER nav: Fleet & Supervisor hidden', !wNav.includes('Fleet & Supervisor'));
   check('WORKER nav: Admin Studio hidden', !wNav.includes('Admin Studio'));
+  check('WORKER nav: current tab highlighted on /worker', (await navCurrent()) === 'Worker Station', await navCurrent());
   let wUrl = await directUrl('/organization');
   check('WORKER direct URL /organization blocked', !wUrl.includes('/organization'), wUrl);
   wUrl = await directUrl('/admin');
@@ -243,6 +248,9 @@ async function login(page, org, email) {
   check('WORKER /worker accessible', wUrl.includes('/worker'), wUrl);
   wUrl = await directUrl('/training');
   check('WORKER /training accessible', wUrl.includes('/training'), wUrl);
+  wUrl = await directUrl('/onboarding/language');
+  check('WORKER /onboarding/language accessible (sub-route)', wUrl.includes('/onboarding/language'), wUrl);
+  check('WORKER nav: sub-route highlights its tab (Onboarding)', (await navCurrent()) === 'Onboarding', await navCurrent());
 
   // SUPERVISOR (Acme)
   await logout();
@@ -253,6 +261,7 @@ async function login(page, org, email) {
   check('SUPERVISOR nav: Fleet & Supervisor visible', sNav.includes('Fleet & Supervisor'), sNav.join(', '));
   check('SUPERVISOR nav: Admin Studio hidden', !sNav.includes('Admin Studio'));
   check('SUPERVISOR nav: Worker Station hidden', !sNav.includes('Worker Station'));
+  check('SUPERVISOR nav: current tab highlighted on /organization', (await navCurrent()) === 'Fleet & Supervisor', await navCurrent());
   let sUrl = await directUrl('/organization');
   check('SUPERVISOR /organization accessible', sUrl.includes('/organization'), sUrl);
   sUrl = await directUrl('/admin');
