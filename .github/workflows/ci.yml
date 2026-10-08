@@ -84,7 +84,7 @@ jobs:
           kill "$(cat /tmp/uvicorn.pid)" || true
 
   frontend:
-    name: Frontend: typecheck, lint, unit tests, production build
+    name: Frontend typecheck, lint, unit tests, production build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -152,7 +152,7 @@ jobs:
               tail -150 /tmp/compose-build.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            grep -iE "error|failed" /tmp/compose-build.log | head -20 | tr '\n' ' ' | head -c 3000 | sed 's/^/docker build errors: /' | sed 's/^/::error title=docker compose build::/'
+            grep -iE "ERROR:|error:|failed to solve|failed to compute|not found|cannot find|Unable to locate|exit code: [1-9]" /tmp/compose-build.log | head -20 | tr '\n' ' ' | head -c 3000 | sed 's/^/docker build errors: /' | sed 's/^/::error title=docker compose build::/'
             exit 1
           fi
 

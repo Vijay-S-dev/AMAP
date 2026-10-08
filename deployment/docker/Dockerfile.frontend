@@ -26,6 +26,12 @@ ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 
 COPY --from=deps /app/node_modules ./node_modules
+# public/ (MediaPipe wasm + hand_landmarker.task) is materialized by the
+# postinstall hook during the deps-stage npm ci; it is NOT committed to
+# git, so it must be carried over from the deps stage. Without this the
+# runner-stage `COPY --from=builder /app/public` fails with
+# '"/app/public": not found' (docker build cannot COPY a missing dir).
+COPY --from=deps /app/public ./public
 COPY frontend ./
 
 ENV NEXT_TELEMETRY_DISABLED=1 \
