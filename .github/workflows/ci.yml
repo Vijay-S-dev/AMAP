@@ -1,12 +1,13 @@
 # ====================================================================
 # AMAP CI — runs from a clean checkout on every push / PR.
 # Gates (all must pass; each one fails the run on broken code):
-#   1. migrations 001..051 on a fresh PostgreSQL 16
+#   1. all migrations on a fresh PostgreSQL 16
 #   2. seed
 #   3. complete backend test suite (zero failures / zero collection
 #      errors / zero skips — the Vosk models are prefetched so the
 #      real STT tests execute)
-#   4. frontend: npm ci + typecheck + production build
+#   4. frontend: npm ci + typecheck + lint + unit tests (gesture
+#      engine, voice worklet, route-access policy) + production build
 #   5. critical end-to-end over real HTTP + PostgreSQL assertions
 #   6. docker compose build + up + readiness/login/API checks
 # ====================================================================
@@ -83,7 +84,7 @@ jobs:
           kill "$(cat /tmp/uvicorn.pid)" || true
 
   frontend:
-    name: Typecheck + production build
+    name: Frontend: typecheck, lint, unit tests, production build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,6 +102,14 @@ jobs:
       - name: Typecheck
         working-directory: frontend
         run: npm run typecheck
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Unit tests (gesture engine + voice worklet + route access)
+        working-directory: frontend
+        run: npm run test:engine
 
       - name: Production build
         working-directory: frontend
