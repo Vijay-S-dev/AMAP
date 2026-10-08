@@ -200,7 +200,7 @@ async function login(page, org, email) {
     // Click inside the page, DEFERRED by a tick so this evaluate resolves
     // before the SPA navigation can destroy the execution context.
     await safeEval(() => {
-      const btn = [...document.querySelectorAll('button')].find(e => /logout/i.test(e.getAttribute('aria-label') || ''));
+      const btn = [...document.querySelectorAll('button')].find(e => /log\s?out/i.test(e.getAttribute('aria-label') || ''));
       if (btn) setTimeout(() => btn.click(), 0);
     });
     const t0 = Date.now();
