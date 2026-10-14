@@ -29,6 +29,17 @@ const nextConfig = {
   env: { NEXT_PUBLIC_BUILD_INFO: buildStamp() },
   // Required by deployment/docker/Dockerfile.frontend (standalone server bundle).
   output: 'standalone',
+  // Cache policy: HTML and API responses must NEVER be served from a cache
+  // (a stale HTML page = users seeing an old UI after a redeploy — exactly
+  // the failure this fixes). Content-hashed /_next/static assets are the
+  // exception: they are immutable per build and stay long-cacheable.
+  async headers() {
+    return [
+      { source: '/:path*', headers: [{ key: 'Cache-Control', value: 'no-store' }] },
+      { source: '/_next/static/:path*', headers: [{ key: 'Cache-Control', value: 'public, max-age=31536000, immutable' }] },
+      { source: '/api/:path*', headers: [{ key: 'Cache-Control', value: 'no-store' }] },
+    ];
+  },
   async rewrites() {
     return [
       {
