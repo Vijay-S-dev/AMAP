@@ -245,6 +245,9 @@ export default function HomePage() {
 
       <footer style={{ marginTop: '2.75rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
         Hybrid Control Interface — accessible multimodal operation of digital industrial workflows.
+        <span style={{ display: 'block', marginTop: '0.4rem', opacity: 0.8 }}>
+          Build {process.env.NEXT_PUBLIC_BUILD_INFO || 'dev'}
+        </span>
       </footer>
     </main>
   );
