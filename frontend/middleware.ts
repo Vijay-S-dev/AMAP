@@ -1,15 +1,29 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import {
+  decodeTokenPayload,
+  isPathAllowedForRoles,
+  landingPathForRoles,
+} from './shared/auth/routeAccess';
 
 /**
- * AMAP Edge Route Protection Middleware (§ 7, § 50)
+ * Hybrid Control Interface — Edge Route Protection Middleware (§ 7, § 50)
  *
- * Provides client-side route gating via structural JWT checks and expiration validation.
+ * Two gates, both enforced BEFORE any protected page renders:
+ *
+ * 1. Authentication: a structurally valid, unexpired JWT must be present.
+ * 2. Authorization: the JWT's roles claim must be admitted to the route
+ *    (worker-lifecycle / fleet / admin), mirroring the backend RBAC role
+ *    sets. Unauthorized users are redirected to their own role's landing
+ *    page — the protected page is never rendered and no protected data is
+ *    fetched or leaked during the redirect.
+ *
  * IMPORTANT SECURITY BOUNDARY NOTE:
- * This edge middleware performs structural and expiry gating only to prevent unauthenticated
- * UI rendering. It does NOT perform cryptographic HMAC signature verification (to avoid
- * exposing secrets to the edge/frontend runtime).
- * The FastAPI backend remains the authoritative cryptographic security boundary enforcing
- * signature verification, active user status, and RBAC authorization on every API request.
+ * This edge middleware performs structural and role-claim gating only to
+ * prevent unauthorized UI rendering. It does NOT perform cryptographic HMAC
+ * signature verification (to avoid exposing secrets to the edge/frontend
+ * runtime). The FastAPI backend remains the authoritative cryptographic
+ * security boundary enforcing signature verification, active user status,
+ * and RBAC authorization on every API request.
  */
 
 const PROTECTED_PREFIXES = [
@@ -21,35 +35,22 @@ const PROTECTED_PREFIXES = [
   '/training',
 ];
 
-function isTokenStructurallyValidAndUnexpired(token: string): boolean {
-  if (!token || typeof token !== 'string') return false;
+function extractToken(request: NextRequest): string | null {
+  let rawToken = request.cookies.get('amap_token')?.value;
 
-  // Reject fake demo tokens
-  if (token.startsWith('demo_token_') || token.startsWith('demo_token')) return false;
-
-  // JWT must contain exactly 3 dot-separated base64url segments (header.payload.signature)
-  const parts = token.split('.');
-  if (parts.length !== 3) return false;
-
-  try {
-    // Decode payload segment (base64url → base64 with proper padding)
-    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    while (base64.length % 4) base64 += '=';
-    const jsonPayload = atob(base64);
-    const payload = JSON.parse(jsonPayload);
-
-    // Check expiration claim (exp in seconds)
-    if (payload.exp && typeof payload.exp === 'number') {
-      const currentTimeSeconds = Math.floor(Date.now() / 1000);
-      if (currentTimeSeconds >= payload.exp) {
-        return false; // Token expired
-      }
-    }
-
-    return true;
-  } catch {
-    return false;
+  // Strip enclosing quotes that some cookie parsers may include
+  if (rawToken && rawToken.startsWith('"') && rawToken.endsWith('"')) {
+    rawToken = rawToken.slice(1, -1);
   }
+
+  if (!rawToken) {
+    const authHeader = request.headers.get('authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      rawToken = authHeader.substring(7).trim();
+    }
+  }
+
+  return rawToken || null;
 }
 
 export function middleware(request: NextRequest) {
@@ -60,25 +61,27 @@ export function middleware(request: NextRequest) {
   );
 
   if (isProtected) {
-    let rawToken = request.cookies.get('amap_token')?.value;
+    const rawToken = extractToken(request);
 
-    // Strip enclosing quotes that some cookie parsers may include
-    if (rawToken && rawToken.startsWith('"') && rawToken.endsWith('"')) {
-      rawToken = rawToken.slice(1, -1);
-    }
+    // Gate 1 — authentication: reject missing, fake, expired, or malformed
+    // tokens (no x-amap-authenticated bypass).
+    const payload = decodeTokenPayload(rawToken);
+    const isUnexpired =
+      !!rawToken &&
+      !!payload &&
+      (!payload.exp || Math.floor(Date.now() / 1000) < (payload.exp as number));
 
-    if (!rawToken) {
-      const authHeader = request.headers.get('authorization');
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        rawToken = authHeader.substring(7).trim();
-      }
-    }
-
-    // Reject missing, fake, expired, or malformed tokens (no x-amap-authenticated bypass)
-    if (!rawToken || !isTokenStructurallyValidAndUnexpired(rawToken)) {
+    if (!isUnexpired) {
       const loginUrl = new URL('/login', request.url);
       loginUrl.searchParams.set('redirect', pathname);
       return NextResponse.redirect(loginUrl);
+    }
+
+    // Gate 2 — authorization: the role must be admitted to this route.
+    // Mirrors backend RBAC; redirects to the user's own landing page.
+    if (!isPathAllowedForRoles(pathname, payload?.roles ?? null)) {
+      const landing = new URL(landingPathForRoles(payload?.roles ?? null), request.url);
+      return NextResponse.redirect(landing);
     }
   }
 

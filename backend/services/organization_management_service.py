@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from models.enterprise_organization import (
+    DatasetItem,
+    DatasetRecordItem,
     DepartmentCreatePayload,
     DepartmentItem,
     DepartmentUpdatePayload,
@@ -28,15 +30,29 @@ from models.enterprise_organization import (
     WorkflowStepItem,
     WorkflowTemplate,
     WorkflowUpdatePayload,
+    WorkerUpdatePayload,
 )
+import secrets
+
+from psycopg import errors
+
 from repositories.assistance_requests import AssistanceRequestsRepository
 from repositories.audit_events import AuditEventsRepository
+from repositories.datasets import DatasetsRepository
 from repositories.departments import DepartmentsRepository
 from repositories.organizations import OrganizationsRepository
+from repositories.tasks import TasksRepository
+from repositories.worker_task_assignments import WorkerTaskAssignmentsRepository
+from repositories.roles import RolesRepository
+from repositories.user_departments import UserDepartmentsRepository
+from repositories.user_roles import UserRolesRepository
 from repositories.users import UsersRepository
+from repositories.worker_readiness import WorkerReadinessRepository
 from repositories.worker_profiles import WorkerProfilesRepository
 from repositories.workflows import WorkflowsRepository
-from services.base import NotFoundError, ValidationError
+from repositories.workflow_steps import WorkflowStepsRepository
+from services.base import ConflictError, NotFoundError, ValidationError
+from utils.security import hash_password
 
 
 class OrganizationManagementService:
@@ -49,44 +65,104 @@ class OrganizationManagementService:
         users_repo: Optional[UsersRepository] = None,
         workers_repo: Optional[WorkerProfilesRepository] = None,
         workflows_repo: Optional[WorkflowsRepository] = None,
+        workflow_steps_repo: Optional[WorkflowStepsRepository] = None,
+        tasks_repo: Optional[TasksRepository] = None,
+        worker_task_assignments_repo: Optional[WorkerTaskAssignmentsRepository] = None,
         audit_repo: Optional[AuditEventsRepository] = None,
         assistance_repo: Optional[AssistanceRequestsRepository] = None,
+        user_departments_repo: Optional[UserDepartmentsRepository] = None,
+        roles_repo: Optional[RolesRepository] = None,
+        user_roles_repo: Optional[UserRolesRepository] = None,
+        worker_readiness_repo: Optional[WorkerReadinessRepository] = None,
+        datasets_repo: Optional[DatasetsRepository] = None,
     ) -> None:
         self.orgs_repo = orgs_repo or OrganizationsRepository()
         self.depts_repo = depts_repo or DepartmentsRepository()
         self.users_repo = users_repo or UsersRepository()
         self.workers_repo = workers_repo or WorkerProfilesRepository()
         self.workflows_repo = workflows_repo or WorkflowsRepository()
+        self.workflow_steps_repo = workflow_steps_repo or WorkflowStepsRepository()
+        self.tasks_repo = tasks_repo or TasksRepository()
+        self.worker_task_assignments_repo = worker_task_assignments_repo or WorkerTaskAssignmentsRepository()
         self.audit_repo = audit_repo or AuditEventsRepository()
         self.assistance_repo = assistance_repo or AssistanceRequestsRepository()
+        self.user_departments_repo = user_departments_repo or UserDepartmentsRepository()
+        self.roles_repo = roles_repo or RolesRepository()
+        self.user_roles_repo = user_roles_repo or UserRolesRepository()
+        self.worker_readiness_repo = worker_readiness_repo or WorkerReadinessRepository()
+        self.datasets_repo = datasets_repo or DatasetsRepository()
 
     # =========================================================================
     # 1. Organization Dashboard KPIs (§ 5, § 34)
     # =========================================================================
 
     def get_organization_dashboard(self, organization_id: UUID) -> OrganizationDashboardKPIs:
-        """Aggregate real database statistics for the organization operational dashboard."""
+        """Aggregate real database statistics for the organization operational dashboard.
+
+        Worker KPIs come from the enterprise directory lifecycle, task KPIs
+        from worker_task_assignments rows, and assistance/emergency counts
+        from assistance_requests - no derived-from-invented-vocabulary
+        constants.
+        """
         org = self.orgs_repo.get_by_id(organization_id)
-        org_name = org.get("name") if isinstance(org, dict) else "Enterprise Organization"
-        if not isinstance(org_name, str):
-            org_name = "Enterprise Organization"
+        org_name = org.get("name") if isinstance(org, dict) else None
+        if not isinstance(org_name, str) or not org_name:
+            org_name = "Unknown organization"
 
         workers = self.list_workers(organization_id, page=1, page_size=500)["items"]
         supervisors = self.list_supervisors(organization_id)
         departments = self.list_departments(organization_id)
         workflows = self.list_workflows(organization_id)
+
+        total_workers = len(workers)
+        active_workers = sum(1 for w in workers if w.status != "DEACTIVATED")
+        available_workers = sum(1 for w in workers if w.status == "READY")
+        working_workers = sum(1 for w in workers if w.status == "WORKING")
+
+        completed_tasks = 0
+        in_progress_tasks = 0
+        pending_tasks = 0
+        org_tasks = self.tasks_repo.list_by_organization_id(organization_id)
+        for task in org_tasks:
+            for assignment in self.worker_task_assignments_repo.list_by_task_id(task["id"]):
+                st = assignment.get("status")
+                if st == "completed":
+                    completed_tasks += 1
+                elif st == "in_progress":
+                    in_progress_tasks += 1
+                elif st == "assigned":
+                    pending_tasks += 1
+        total_assignments = completed_tasks + in_progress_tasks + pending_tasks
+        completion_rate = (
+            round((completed_tasks / total_assignments) * 100.0, 1)
+            if total_assignments > 0 else 0.0
+        )
+        datasets_count = len(self.datasets_repo.list_by_organization(organization_id))
+        recent_activity = [
+            {
+                "id": str(row.get("id")),
+                "task_name": row.get("task_name"),
+                "status": row.get("status"),
+                "assigned_at": row.get("assigned_at"),
+                "started_at": row.get("started_at"),
+                "completed_at": row.get("completed_at"),
+            }
+            for row in self.worker_task_assignments_repo.list_recent_by_organization(
+                organization_id, limit=8
+            )
+        ]
+
         assistance_tickets = self.get_assistance_overview(organization_id)
         emergency_events = self.get_emergency_events(organization_id)
 
-        total_workers = len(workers)
-        active_workers = sum(1 for w in workers if w.status in ("WORKING", "READY", "ONBOARDING"))
-        available_workers = sum(1 for w in workers if w.status == "READY")
-        active_tasks = sum(1 for w in workers if w.status == "WORKING")
-        completed_tasks = sum(1 for w in workers if w.status == "COMPLETED")
-        pending_tasks = max(0, len(workflows) - active_tasks - completed_tasks)
-
-        open_assistance = sum(1 for a in assistance_tickets if a.get("status") in ("open", "acknowledged"))
-        utilization = (active_tasks / total_workers * 100.0) if total_workers > 0 else 0.0
+        open_assistance = sum(
+            1 for a in assistance_tickets
+            if a.get("status") in ("open", "acknowledged", "in_progress")
+        )
+        utilization = (
+            round((working_workers / total_workers) * 100.0, 1)
+            if total_workers > 0 else 0.0
+        )
 
         return OrganizationDashboardKPIs(
             organization_id=organization_id,
@@ -96,36 +172,42 @@ class OrganizationManagementService:
             available_workers_count=available_workers,
             supervisors_count=len(supervisors),
             departments_count=len(departments),
-            active_tasks_count=active_tasks,
+            active_tasks_count=in_progress_tasks,
             completed_tasks_count=completed_tasks,
             pending_tasks_count=pending_tasks,
             open_assistance_requests_count=open_assistance,
             emergency_events_count=len(emergency_events),
-            current_line_utilization_percent=round(utilization, 1),
+            current_line_utilization_percent=utilization,
+            datasets_count=datasets_count,
+            workflow_definitions_count=len(workflows),
+            task_definitions_count=len(org_tasks),
+            completion_rate_percent=completion_rate,
+            recent_activity=recent_activity,
         )
 
-    # =========================================================================
     # 2. Organization Profile & Settings (§ 6, § 28)
     # =========================================================================
 
     def get_organization_profile(self, organization_id: UUID) -> OrganizationProfileRead:
-        """Retrieve tenant profile and accessibility configurations."""
+        """Retrieve tenant profile and accessibility configurations from PostgreSQL."""
         org = self.orgs_repo.get_by_id(organization_id)
         if not org:
             raise NotFoundError("Organization not found.")
 
         now = datetime.now(timezone.utc)
+        supported = org.get("supported_languages")
+        accessibility = org.get("accessibility_defaults")
         return OrganizationProfileRead(
             id=org["id"],
             name=org["name"],
-            organization_type="industrial_manufacturing",
-            industry="Automotive & Aerospace Assembly",
-            location="Main Assembly Facility",
-            contact_email="operations@" + org["name"].lower().replace(" ", "").replace("—", "")[:12] + ".com",
+            organization_type=org.get("organization_type") or "industrial_manufacturing",
+            industry=org.get("industry") or "Automotive & Aerospace Assembly",
+            location=org.get("location") or "Main Operations Facility",
+            contact_email=org.get("contact_email"),
             status=org.get("status", "active"),
-            default_language="en",
-            supported_languages=["en", "es", "ta", "hi", "de"],
-            accessibility_defaults={
+            default_language=org.get("default_language") or "en",
+            supported_languages=list(supported) if isinstance(supported, list) else ["en", "hi"],
+            accessibility_defaults=dict(accessibility) if isinstance(accessibility, dict) else {
                 "default_dwell_time_ms": 500,
                 "high_contrast_default": False,
                 "min_target_size_px": 48,
@@ -141,17 +223,78 @@ class OrganizationManagementService:
         payload: OrganizationProfileUpdate,
         actor_id: UUID,
     ) -> OrganizationProfileRead:
-        """Update organization profile, emit audit log, and return updated state."""
+        """Persist every exposed profile/settings field (was audit-only for
+        everything except name, with the name update itself swallowed)."""
         org = self.orgs_repo.get_by_id(organization_id)
         if not org:
             raise NotFoundError("Organization not found.")
 
-        if payload.name:
-            # Update name if provided
-            try:
-                self.orgs_repo.update_name(organization_id, payload.name)
-            except Exception:
-                pass
+        changes = payload.model_dump(exclude_unset=True)
+        name = changes.get("name", org["name"])
+
+        if "supported_languages" in changes:
+            langs = changes["supported_languages"]
+            if (
+                not isinstance(langs, list)
+                or not langs
+                or any(
+                    not isinstance(x, str) or x not in ("en", "hi")
+                    for x in langs
+                )
+            ):
+                raise ValidationError(
+                    "supported_languages must be a non-empty list containing only 'en' and 'hi'."
+                )
+
+        if "default_language" in changes and changes["default_language"] not in ("en", "hi"):
+            raise ValidationError("default_language must be 'en' or 'hi'.")
+        if "accessibility_defaults" in changes and not isinstance(
+            changes["accessibility_defaults"], dict
+        ):
+            raise ValidationError("accessibility_defaults must be an object.")
+        if "name" in changes and not str(name).strip():
+            raise ValidationError("Organization name cannot be empty.")
+
+        if name != org["name"]:
+            clash = self.orgs_repo.get_by_name(name)
+            if clash and clash["id"] != organization_id:
+                raise ConflictError(f"An organization named '{name}' already exists.")
+
+        try:
+            self.orgs_repo.update_profile(
+                organization_id=organization_id,
+                name=name,
+                organization_type=changes.get(
+                    "organization_type",
+                    org.get("organization_type") or "industrial_manufacturing",
+                ),
+                industry=changes.get(
+                    "industry",
+                    org.get("industry") or "Automotive & Aerospace Assembly",
+                ),
+                location=changes.get(
+                    "location", org.get("location") or "Main Operations Facility"
+                ),
+                contact_email=changes.get("contact_email", org.get("contact_email")),
+                default_language=changes.get("default_language", org.get("default_language") or "en"),
+                supported_languages=changes.get(
+                    "supported_languages",
+                    list(org["supported_languages"]) if isinstance(org.get("supported_languages"), list)
+                    else ["en", "hi"],
+                ),
+                accessibility_defaults=changes.get(
+                    "accessibility_defaults",
+                    dict(org["accessibility_defaults"]) if isinstance(org.get("accessibility_defaults"), dict)
+                    else {
+                        "default_dwell_time_ms": 500,
+                        "high_contrast_default": False,
+                        "min_target_size_px": 48,
+                        "voice_confirmation_default": False,
+                    },
+                ),
+            )
+        except errors.UniqueViolation:
+            raise ConflictError(f"An organization named '{name}' already exists.")
 
         self.audit_repo.create(
             organization_id=organization_id,
@@ -159,33 +302,32 @@ class OrganizationManagementService:
             event_type="organization.profile_updated",
             resource_type="organization",
             resource_id=organization_id,
-            event_data=payload.model_dump(exclude_unset=True),
+            event_data=changes,
         )
 
         return self.get_organization_profile(organization_id)
 
-    # =========================================================================
     # 3. Department Management (§ 7, § 8)
     # =========================================================================
 
+    @staticmethod
+    def _department_item(row: Dict[str, Any]) -> DepartmentItem:
+        return DepartmentItem(
+            id=row["id"],
+            organization_id=row["organization_id"],
+            name=row["name"],
+            status=row["status"],
+            supervisor_count=int(row.get("supervisor_count") or 0),
+            worker_count=int(row.get("worker_count") or 0),
+            active_tasks_count=int(row.get("active_tasks_count") or 0),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
     def list_departments(self, organization_id: UUID) -> List[DepartmentItem]:
-        """List all departments belonging to this organization."""
-        records = self.depts_repo.list_by_organization(organization_id)
-        now = datetime.now(timezone.utc)
-        return [
-            DepartmentItem(
-                id=r["id"],
-                organization_id=r["organization_id"],
-                name=r["name"],
-                status=r.get("status", "active"),
-                supervisor_count=1,
-                worker_count=2,
-                active_tasks_count=1,
-                created_at=r.get("created_at") or now,
-                updated_at=r.get("updated_at") or now,
-            )
-            for r in records
-        ]
+        """List departments with real supervisor/worker/active-task aggregates."""
+        rows = self.depts_repo.list_by_organization_with_counts(organization_id)
+        return [self._department_item(row) for row in rows]
 
     def create_department(
         self,
@@ -193,13 +335,21 @@ class OrganizationManagementService:
         payload: DepartmentCreatePayload,
         actor_id: UUID,
     ) -> DepartmentItem:
-        """Create a new department scoped to the organization."""
+        """Create a new department scoped to the organization (409 on duplicate)."""
         existing = self.depts_repo.get_by_name(organization_id, payload.name)
         if existing:
-            raise ValidationError(f"Department '{payload.name}' already exists in this organization.")
+            raise ConflictError(
+                f"Department '{payload.name}' already exists in this organization."
+            )
 
-        created = self.depts_repo.create(organization_id=organization_id, name=payload.name)
-        now = datetime.now(timezone.utc)
+        try:
+            created = self.depts_repo.create(
+                organization_id=organization_id, name=payload.name
+            )
+        except errors.UniqueViolation as exc:
+            raise ConflictError(
+                f"Department '{payload.name}' already exists in this organization."
+            ) from exc
 
         self.audit_repo.create(
             organization_id=organization_id,
@@ -207,20 +357,11 @@ class OrganizationManagementService:
             event_type="department.created",
             resource_type="department",
             resource_id=created["id"],
-            event_data={"name": payload.name},
+            event_data={"name": payload.name, "status": created["status"]},
         )
 
-        return DepartmentItem(
-            id=created["id"],
-            organization_id=created["organization_id"],
-            name=created["name"],
-            status=created.get("status", "active"),
-            supervisor_count=0,
-            worker_count=0,
-            active_tasks_count=0,
-            created_at=created.get("created_at") or now,
-            updated_at=created.get("updated_at") or now,
-        )
+        counted = self.depts_repo.get_with_counts(created["id"])
+        return self._department_item(counted or created)
 
     def update_department(
         self,
@@ -229,13 +370,37 @@ class OrganizationManagementService:
         payload: DepartmentUpdatePayload,
         actor_id: UUID,
     ) -> DepartmentItem:
-        """Update department properties enforcing organization ownership."""
+        """Persist department rename/status changes (previously audit-only)."""
         dept = self.depts_repo.get_by_id(department_id)
         if not dept or dept["organization_id"] != organization_id:
             raise NotFoundError("Department not found in your organization.")
 
-        # Update in database if supported
-        now = datetime.now(timezone.utc)
+        new_name = payload.name
+        status_value = payload.status
+        # EntityStatus may be coerced to a plain string by model config.
+        new_status = getattr(status_value, "value", status_value) if status_value is not None else None
+        if new_name is None and new_status is None:
+            raise ValidationError("No changes supplied; provide name and/or status.")
+
+        if new_name is not None and new_name != dept["name"]:
+            clash = self.depts_repo.get_by_name(organization_id, new_name)
+            if clash and clash["id"] != department_id:
+                raise ConflictError(
+                    f"Department '{new_name}' already exists in this organization."
+                )
+
+        try:
+            updated = self.depts_repo.update(
+                department_id=department_id, name=new_name, status=new_status
+            )
+        except errors.UniqueViolation as exc:
+            raise ConflictError(
+                f"Department '{new_name}' already exists in this organization."
+            ) from exc
+
+        if updated is None:
+            raise ValidationError("No changes supplied; provide name and/or status.")
+
         self.audit_repo.create(
             organization_id=organization_id,
             actor_user_id=actor_id,
@@ -245,17 +410,8 @@ class OrganizationManagementService:
             event_data=payload.model_dump(exclude_unset=True),
         )
 
-        return DepartmentItem(
-            id=dept["id"],
-            organization_id=dept["organization_id"],
-            name=payload.name or dept["name"],
-            status=str(payload.status.value if payload.status and hasattr(payload.status, "value") else (payload.status or dept.get("status", "active"))),
-            supervisor_count=1,
-            worker_count=2,
-            active_tasks_count=1,
-            created_at=dept.get("created_at") or now,
-            updated_at=now,
-        )
+        counted = self.depts_repo.get_with_counts(department_id)
+        return self._department_item(counted or updated)
 
     def deactivate_department(
         self,
@@ -263,67 +419,53 @@ class OrganizationManagementService:
         department_id: UUID,
         actor_id: UUID,
     ) -> Dict[str, Any]:
-        """Deactivate department with organization isolation."""
+        """Deactivate department (real status mutation, previously audit-only)."""
         dept = self.depts_repo.get_by_id(department_id)
         if not dept or dept["organization_id"] != organization_id:
             raise NotFoundError("Department not found in your organization.")
 
-        self.audit_repo.create(
-            organization_id=organization_id,
-            actor_user_id=actor_id,
-            event_type="department.deactivated",
-            resource_type="department",
-            resource_id=department_id,
-            event_data={"name": dept["name"]},
-        )
-        return {"message": f"Department '{dept['name']}' has been deactivated."}
+        if dept["status"] != "inactive":
+            updated = self.depts_repo.update(
+                department_id=department_id, status="inactive"
+            )
+            if updated is None:
+                raise ValidationError("Department could not be deactivated.")
+            self.audit_repo.create(
+                organization_id=organization_id,
+                actor_user_id=actor_id,
+                event_type="department.deactivated",
+                resource_type="department",
+                resource_id=department_id,
+                event_data={"name": dept["name"], "previous_status": dept["status"]},
+            )
+
+        return {
+            "message": f"Department '{dept['name']}' has been deactivated.",
+            "id": str(department_id),
+            "status": "inactive",
+        }
 
     # =========================================================================
     # 4. Supervisor Management (§ 9, § 13)
     # =========================================================================
 
     def list_supervisors(self, organization_id: UUID) -> List[SupervisorItem]:
-        """List supervisors belonging to the organization."""
-        now = datetime.now(timezone.utc)
-        depts = {d["id"]: d["name"] for d in self.depts_repo.list_by_organization(organization_id)}
-
-        users = self.users_repo.list_by_organization(organization_id)
-        supervisors = []
-        for u in users:
-            role = u.get("role") or ""
-            if "supervisor" in role.lower():
-                dept_name = "Powertrain & Gearbox Integration"
-                supervisors.append(
-                    SupervisorItem(
-                        user_id=u["id"],
-                        organization_id=organization_id,
-                        full_name=u.get("full_name") or u.get("email", "").split("@")[0].title(),
-                        email=u["email"],
-                        department_id=list(depts.keys())[0] if depts else None,
-                        department_name=dept_name,
-                        status=u.get("status", "active"),
-                        assigned_workers_count=3,
-                        created_at=u.get("created_at") or now,
-                    )
-                )
-
-        if not supervisors:
-            # Fallback default supervisor for seed
-            supervisors.append(
-                SupervisorItem(
-                    user_id=UUID("c0000000-0000-0000-0000-000000000002"),
-                    organization_id=organization_id,
-                    full_name="Marcus Vance",
-                    email="supervisor@amap.com",
-                    department_id=list(depts.keys())[0] if depts else None,
-                    department_name="Powertrain & Gearbox Integration",
-                    status="active",
-                    assigned_workers_count=3,
-                    created_at=now,
-                )
+        """List supervisors from PostgreSQL with real department and worker counts."""
+        rows = self.users_repo.list_organization_supervisors(organization_id)
+        return [
+            SupervisorItem(
+                user_id=row["id"],
+                organization_id=organization_id,
+                full_name=row["full_name"],
+                email=row["email"],
+                department_id=row.get("department_id"),
+                department_name=row.get("department_name") or "Unassigned",
+                status=row["status"],
+                assigned_workers_count=int(row.get("assigned_workers_count") or 0),
+                created_at=row["created_at"],
             )
-
-        return supervisors
+            for row in rows
+        ]
 
     def invite_supervisor(
         self,
@@ -331,34 +473,85 @@ class OrganizationManagementService:
         payload: SupervisorInvitePayload,
         actor_id: UUID,
     ) -> SupervisorItem:
-        """Invite a new floor supervisor to an organization department."""
-        now = datetime.now(timezone.utc)
-        dept_name = "Unassigned"
+        """
+        Create a real supervisor account: persists user, department assignment,
+        and supervisor role in PostgreSQL. Duplicate email -> ConflictError (409).
+        """
+        email = payload.email.strip().lower()
+
+        existing = self.users_repo.get_by_email(organization_id, email)
+        if existing:
+            raise ConflictError(
+                f"A user with email '{email}' already exists in this organization."
+            )
+
+        dept = None
         if payload.department_id:
             dept = self.depts_repo.get_by_id(payload.department_id)
-            if dept and dept["organization_id"] == organization_id:
-                dept_name = dept["name"]
+            if not dept or dept["organization_id"] != organization_id:
+                raise ValidationError("Department does not exist in this organization.")
 
-        new_user_id = uuid4()
+        initial_password = payload.temporary_password or secrets.token_urlsafe(24)
+        password_hash = hash_password(initial_password)
+
+        try:
+            user = self.users_repo.create(
+                organization_id=organization_id,
+                email=email,
+                full_name=payload.full_name,
+                password_hash=password_hash,
+            )
+        except errors.UniqueViolation as exc:
+            raise ConflictError(
+                f"A user with email '{email}' already exists in this organization."
+            ) from exc
+
+        try:
+            if dept:
+                self.user_departments_repo.create(
+                    user_id=user["id"],
+                    department_id=dept["id"],
+                )
+
+            supervisor_role = self.roles_repo.get_by_name("supervisor")
+            if supervisor_role and not self.user_roles_repo.get(
+                user_id=user["id"], role_id=supervisor_role["id"]
+            ):
+                self.user_roles_repo.create(
+                    user_id=user["id"],
+                    role_id=supervisor_role["id"],
+                )
+        except Exception:
+            try:
+                self.users_repo.delete_by_id(user["id"])
+            except Exception:
+                pass
+            raise
+
         self.audit_repo.create(
             organization_id=organization_id,
             actor_user_id=actor_id,
             event_type="supervisor.invited",
             resource_type="user",
-            resource_id=new_user_id,
-            event_data={"email": payload.email, "full_name": payload.full_name, "department": dept_name},
+            resource_id=user["id"],
+            event_data={
+                "email": email,
+                "full_name": payload.full_name,
+                "department": dept["name"] if dept else "Unassigned",
+                "notes": payload.notes,
+            },
         )
 
         return SupervisorItem(
-            user_id=new_user_id,
+            user_id=user["id"],
             organization_id=organization_id,
-            full_name=payload.full_name,
-            email=payload.email,
-            department_id=payload.department_id,
-            department_name=dept_name,
+            full_name=user["full_name"],
+            email=user["email"],
+            department_id=dept["id"] if dept else None,
+            department_name=dept["name"] if dept else "Unassigned",
             status="invited",
             assigned_workers_count=0,
-            created_at=now,
+            created_at=user["created_at"],
         )
 
     def update_supervisor(
@@ -368,16 +561,76 @@ class OrganizationManagementService:
         payload: SupervisorUpdatePayload,
         actor_id: UUID,
     ) -> Dict[str, Any]:
-        """Update supervisor department assignment or status."""
+        """Apply real supervisor updates: department reassignment and/or status change."""
+        changes: Dict[str, Any] = {}
+
+        if not payload.model_dump(exclude_unset=True):
+            raise ValidationError("No changes supplied; provide department_id and/or status.")
+
+        user = self.users_repo.get_by_id(user_id)
+        if not user or user["organization_id"] != organization_id:
+            raise NotFoundError("Supervisor not found in this organization.")
+
+        supervisor_role = self.roles_repo.get_by_name("supervisor")
+        role_links = self.user_roles_repo.get_by_user_id(user_id)
+        if not supervisor_role or not any(
+            link["role_id"] == supervisor_role["id"] for link in role_links
+        ):
+            raise NotFoundError("User is not a supervisor in this organization.")
+
+        if payload.full_name is not None or payload.email is not None:
+            new_email: Optional[str] = None
+            if payload.email is not None:
+                new_email = payload.email.strip().lower()
+                existing = self.users_repo.get_by_email(organization_id, new_email)
+                if existing and str(existing["id"]) != str(user_id):
+                    raise ConflictError(
+                        f"A user with email '{new_email}' already exists in this organization."
+                    )
+            updated_user = self.users_repo.update_details(
+                user_id=user_id,
+                full_name=payload.full_name,
+                email=new_email,
+            )
+            if not updated_user:
+                raise NotFoundError("Supervisor not found in this organization.")
+            if payload.full_name is not None:
+                changes["full_name"] = payload.full_name
+            if new_email is not None:
+                changes["email"] = new_email
+
+        if payload.department_id is not None:
+            dept = self.depts_repo.get_by_id(payload.department_id)
+            if not dept or dept["organization_id"] != organization_id:
+                raise NotFoundError("Department not found in this organization.")
+            for link in self.user_departments_repo.get_by_user_id(user_id):
+                self.user_departments_repo.delete(
+                    user_id=user_id, department_id=link["department_id"]
+                )
+            self.user_departments_repo.create(
+                user_id=user_id, department_id=dept["id"]
+            )
+            changes["department_id"] = str(dept["id"])
+
+        if payload.status is not None:
+            if payload.status not in ("active", "suspended"):
+                raise ValidationError("status must be 'active' or 'suspended'.")
+            self.users_repo.update_status(user_id=user_id, status=payload.status)
+            changes["status"] = payload.status
+
         self.audit_repo.create(
             organization_id=organization_id,
             actor_user_id=actor_id,
             event_type="supervisor.updated",
             resource_type="user",
             resource_id=user_id,
-            event_data=payload.model_dump(exclude_unset=True),
+            event_data=changes,
         )
-        return {"message": "Supervisor details successfully updated."}
+        return {
+            "message": "Supervisor details successfully updated.",
+            "user_id": str(user_id),
+            "changes": changes,
+        }
 
     # =========================================================================
     # 5. Worker Management (§ 10, § 11, § 13)
@@ -391,96 +644,41 @@ class OrganizationManagementService:
         status_filter: Optional[str] = None,
         dept_filter: Optional[UUID] = None,
     ) -> Dict[str, Any]:
-        """List enterprise workers with real operational and lifecycle state."""
-        now = datetime.now(timezone.utc)
+        """List workers from PostgreSQL with real lifecycle and operational state."""
+        rows, total = self.workers_repo.list_enterprise_directory(
+            organization_id=organization_id,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+            status_filter=status_filter,
+            dept_filter=dept_filter,
+        )
+
         items: List[EnterpriseWorkerItem] = [
             EnterpriseWorkerItem(
-                worker_profile_id=UUID("d0000000-0000-0000-0000-000000000001"),
-                user_id=UUID("c0000000-0000-0000-0000-000000000003"),
-                organization_id=organization_id,
-                full_name="Alex Morgan",
-                email="alex.worker@amap.com",
-                badge_number="WRK-1048",
-                department_name="Powertrain & Gearbox Integration",
-                supervisor_name="Marcus Vance",
-                status="WORKING",
-                interaction_mode="multimodal",
-                training_completed=True,
-                current_task_name="Inverter Sub-Assembly Alpha",
-                created_at=now,
-            ),
-            EnterpriseWorkerItem(
-                worker_profile_id=UUID("d0000000-0000-0000-0000-000000000002"),
-                user_id=UUID("c0000000-0000-0000-0000-000000000004"),
-                organization_id=organization_id,
-                full_name="Jordan Lee",
-                email="jordan.worker@amap.com",
-                badge_number="WRK-1049",
-                department_name="Chassis & Structural Welding",
-                supervisor_name="Marcus Vance",
-                status="READY",
-                interaction_mode="gesture",
-                training_completed=True,
-                current_task_name=None,
-                created_at=now,
-            ),
-            EnterpriseWorkerItem(
-                worker_profile_id=UUID("d0000000-0000-0000-0000-000000000003"),
-                user_id=UUID("c0000000-0000-0000-0000-000000000005"),
-                organization_id=organization_id,
-                full_name="Samira Chen",
-                email="samira.chen@amap.com",
-                badge_number="WRK-1052",
-                department_name="Quality Control & Diagnostics",
-                supervisor_name="Marcus Vance",
-                status="ASSISTANCE_REQUESTED",
-                interaction_mode="voice",
-                training_completed=True,
-                current_task_name="High-Voltage Isolation Check",
-                created_at=now,
-            ),
-            EnterpriseWorkerItem(
-                worker_profile_id=UUID("d0000000-0000-0000-0000-000000000004"),
-                user_id=UUID("c0000000-0000-0000-0000-000000000006"),
-                organization_id=organization_id,
-                full_name="Kenji Sato",
-                email="kenji.sato@amap.com",
-                badge_number="WRK-1055",
-                department_name="Powertrain & Gearbox Integration",
-                supervisor_name="Marcus Vance",
-                status="WORKING",
-                interaction_mode="multimodal",
-                training_completed=True,
-                current_task_name="Planetary Gearbox Assembly",
-                created_at=now,
-            ),
-            EnterpriseWorkerItem(
-                worker_profile_id=UUID("d0000000-0000-0000-0000-000000000005"),
-                user_id=UUID("c0000000-0000-0000-0000-000000000007"),
-                organization_id=organization_id,
-                full_name="Maria Rodriguez",
-                email="maria.newhire@amap.com",
-                badge_number="WRK-1060",
-                department_name="Powertrain & Gearbox Integration",
-                supervisor_name="Marcus Vance",
-                status="ONBOARDING",
-                interaction_mode="multimodal",
-                training_completed=False,
-                current_task_name=None,
-                created_at=now,
-            ),
+                worker_profile_id=row["worker_profile_id"],
+                user_id=row["user_id"],
+                organization_id=row["organization_id"],
+                full_name=row["full_name"],
+                email=row["email"],
+                badge_number=row.get("badge_number"),
+                department_id=row.get("department_id"),
+                department_name=row.get("department_name") or "Unassigned",
+                # No worker->supervisor assignment model exists yet; "Unassigned"
+                # is the honest value (the previous hardcoded roster invented names).
+                supervisor_name="Unassigned",
+                status=row["lifecycle_status"],
+                account_status=row.get("user_status") or "active",
+                interaction_mode=row.get("interaction_mode") or "multimodal",
+                training_completed=bool(row.get("overall_ready")),
+                current_task_name=row.get("current_task_name"),
+                created_at=row["created_at"],
+            )
+            for row in rows
         ]
 
-        if status_filter:
-            items = [w for w in items if w.status.lower() == status_filter.lower()]
-
-        total_count = len(items)
-        start = (page - 1) * page_size
-        end = start + page_size
-
         return {
-            "items": items[start:end],
-            "total_count": total_count,
+            "items": items,
+            "total_count": total,
             "page": page,
             "page_size": page_size,
         }
@@ -491,162 +689,287 @@ class OrganizationManagementService:
         payload: WorkerInvitePayload,
         actor_id: UUID,
     ) -> EnterpriseWorkerItem:
-        """Generate secure worker onboarding invitation without requiring mouse/keyboard setup."""
-        now = datetime.now(timezone.utc)
-        new_profile_id = uuid4()
-        new_user_id = uuid4()
+        """
+        Create a real worker invitation: persists the user account, worker
+        profile (badge), department assignment, worker role, and readiness
+        preferences in PostgreSQL. Duplicate emails yield ConflictError (409).
+        """
+        email = payload.email.strip().lower()
 
-        dept_name = "Unassigned"
+        existing = self.users_repo.get_by_email(organization_id, email)
+        if existing:
+            raise ConflictError(
+                f"A user with email '{email}' already exists in this organization."
+            )
+
+        dept = None
         if payload.department_id:
             dept = self.depts_repo.get_by_id(payload.department_id)
-            if dept and dept["organization_id"] == organization_id:
-                dept_name = dept["name"]
+            if not dept or dept["organization_id"] != organization_id:
+                raise ValidationError("Department does not exist in this organization.")
+
+        # Initial credential: operator-provided temporary password, otherwise a
+        # generated secret. Never returned in the API response.
+        initial_password = (payload.temporary_password or secrets.token_urlsafe(24))
+        password_hash = hash_password(initial_password)
+
+        try:
+            user = self.users_repo.create(
+                organization_id=organization_id,
+                email=email,
+                full_name=payload.full_name,
+                password_hash=password_hash,
+            )
+        except errors.UniqueViolation as exc:
+            raise ConflictError(
+                f"A user with email '{email}' already exists in this organization."
+            ) from exc
+
+        try:
+            profile = self.workers_repo.create(
+                user["id"],
+                badge_number=payload.badge_number,
+            )
+
+            if dept:
+                self.user_departments_repo.create(
+                    user_id=user["id"],
+                    department_id=dept["id"],
+                )
+
+            worker_role = self.roles_repo.get_by_name("worker")
+            if worker_role and not self.user_roles_repo.get(
+                user_id=user["id"], role_id=worker_role["id"]
+            ):
+                self.user_roles_repo.create(
+                    user_id=user["id"],
+                    role_id=worker_role["id"],
+                )
+
+            modality = payload.preferred_modality or "multimodal"
+            self.worker_readiness_repo.upsert(
+                profile["id"],
+                {
+                    "is_fresher": True,
+                    "onboarding_completed": False,
+                    "readiness_status": "incomplete",
+                    "interaction_mode": modality,
+                    "gesture_ready": False,
+                    "voice_ready": False,
+                    "multimodal_ready": False,
+                    "task_training_complete": False,
+                    "overall_ready": False,
+                    "completed_stages": [],
+                    "active_preferences": {
+                        "language": "en",
+                        "modality": modality,
+                        "dwell_time_ms": 500,
+                        "high_contrast": False,
+                        "text_scale": 1.0,
+                    },
+                },
+            )
+        except Exception:
+            # No cross-repository transaction exists at the repository layer;
+            # roll back the partially created account so a failed invitation
+            # never leaves an orphaned user row.
+            try:
+                self.users_repo.delete_by_id(user["id"])
+            except Exception:
+                pass
+            raise
 
         self.audit_repo.create(
             organization_id=organization_id,
             actor_user_id=actor_id,
             event_type="worker.invited",
             resource_type="worker_profile",
-            resource_id=new_profile_id,
+            resource_id=profile["id"],
             event_data={
-                "email": payload.email,
+                "email": email,
                 "full_name": payload.full_name,
                 "badge_number": payload.badge_number,
                 "preferred_modality": payload.preferred_modality,
-                "department": dept_name,
+                "department": dept["name"] if dept else "Unassigned",
             },
         )
 
         return EnterpriseWorkerItem(
-            worker_profile_id=new_profile_id,
-            user_id=new_user_id,
+            worker_profile_id=profile["id"],
+            user_id=user["id"],
             organization_id=organization_id,
-            full_name=payload.full_name,
-            email=payload.email,
-            badge_number=payload.badge_number or f"WRK-{new_profile_id.hex[:4].upper()}",
-            department_id=payload.department_id,
-            department_name=dept_name,
+            full_name=user["full_name"],
+            email=user["email"],
+            badge_number=profile.get("badge_number"),
+            department_id=dept["id"] if dept else None,
+            department_name=dept["name"] if dept else "Unassigned",
             supervisor_name="Unassigned",
             status="INVITED",
+            account_status="active",
             interaction_mode=payload.preferred_modality or "multimodal",
             training_completed=False,
             current_task_name=None,
-            created_at=now,
+            created_at=user["created_at"],
         )
 
     # =========================================================================
     # 6. Enterprise Workflows & Task Templates (§ 14, § 16)
     # =========================================================================
 
-    def list_workflows(self, organization_id: UUID) -> List[WorkflowTemplate]:
-        """List enterprise workflow templates."""
-        now = datetime.now(timezone.utc)
-        return [
-            WorkflowTemplate(
-                id=UUID("e0000000-0000-0000-0000-000000000001"),
-                organization_id=organization_id,
-                name="Inverter Sub-Assembly Alpha",
-                description="Precision power electronics mounting, busbar sequence, and high-voltage isolation QA.",
-                department_name="Powertrain & Gearbox Integration",
-                version=1,
-                status="active",
-                step_count=3,
-                estimated_duration_minutes=18.5,
-                steps=[
-                    WorkflowStepItem(
-                        step_number=1,
-                        title="Optical Component Inspection",
-                        instruction="Verify thermal paste application and capacitor polarity on PCB bed.",
-                        is_safety_critical=False,
-                        expected_duration_seconds=120,
-                        required_intent="NEXT_STEP",
-                    ),
-                    WorkflowStepItem(
-                        step_number=2,
-                        title="Primary Busbar Torquing",
-                        instruction="Align copper busbar and torque M6 fasteners to 9.2 Nm in star pattern.",
-                        is_safety_critical=False,
-                        expected_duration_seconds=240,
-                        required_intent="CONFIRM",
-                    ),
-                    WorkflowStepItem(
-                        step_number=3,
-                        title="High Voltage Isolation Check",
-                        instruction="Connect dielectric probe to safety terminal and engage automated 500V test.",
-                        is_safety_critical=True,
-                        expected_duration_seconds=180,
-                        required_intent="EXECUTE_CYCLE",
-                    ),
-                ],
-                created_at=now,
-                updated_at=now,
-            ),
-            WorkflowTemplate(
-                id=UUID("e0000000-0000-0000-0000-000000000002"),
-                organization_id=organization_id,
-                name="High-Voltage Isolation Check",
-                description="Dielectric insulation resistance check and automated ground bonding verification.",
-                department_name="Quality Control & Diagnostics",
-                version=1,
-                status="active",
-                step_count=2,
-                estimated_duration_minutes=12.0,
-                steps=[
-                    WorkflowStepItem(
-                        step_number=1,
-                        title="Ground Bond Verification",
-                        instruction="Attach 25A ground probe to structural chassis ground lug.",
-                        is_safety_critical=True,
-                        expected_duration_seconds=120,
-                    ),
-                    WorkflowStepItem(
-                        step_number=2,
-                        title="Dielectric Safety Probe",
-                        instruction="Execute 1000V DC hipot isolation check across DC bus terminals.",
-                        is_safety_critical=True,
-                        expected_duration_seconds=180,
-                    ),
-                ],
-                created_at=now,
-                updated_at=now,
-            ),
-            WorkflowTemplate(
-                id=UUID("e0000000-0000-0000-0000-000000000003"),
-                organization_id=organization_id,
-                name="Planetary Gearbox Assembly",
-                description="High-torque reduction gear calibration and planetary bearing seat sequence.",
-                department_name="Powertrain & Gearbox Integration",
-                version=2,
-                status="active",
-                step_count=3,
-                estimated_duration_minutes=25.0,
-                steps=[
-                    WorkflowStepItem(
-                        step_number=1,
-                        title="Alignment Pin Check",
-                        instruction="Insert hardened alignment pins into carrier housing.",
-                        is_safety_critical=False,
-                        expected_duration_seconds=180,
-                    ),
-                    WorkflowStepItem(
-                        step_number=2,
-                        title="Sun Gear Torquing",
-                        instruction="Torque central sun gear to 45.0 Nm with digital torque feedback.",
-                        is_safety_critical=False,
-                        expected_duration_seconds=300,
-                    ),
-                    WorkflowStepItem(
-                        step_number=3,
-                        title="Backlash Dial Gauge QA",
-                        instruction="Measure gear lash within 0.05mm tolerance using optical encoder.",
-                        is_safety_critical=True,
-                        expected_duration_seconds=240,
-                    ),
-                ],
-                created_at=now,
-                updated_at=now,
-            ),
+    def update_worker(
+        self,
+        organization_id: UUID,
+        user_id: UUID,
+        payload: WorkerUpdatePayload,
+        actor_id: UUID,
+    ) -> Dict[str, Any]:
+        """
+        Apply real worker updates: identity (full name / email), badge number,
+        department reassignment, and/or account status. All changes persist in
+        PostgreSQL and are recorded in the organization audit trail.
+        """
+        changes: Dict[str, Any] = {}
+
+        if not payload.model_dump(exclude_unset=True):
+            raise ValidationError("No changes supplied.")
+
+        user = self.users_repo.get_by_id(user_id)
+        if not user or user["organization_id"] != organization_id:
+            raise NotFoundError("Worker not found in this organization.")
+
+        worker_role = self.roles_repo.get_by_name("worker")
+        role_links = self.user_roles_repo.get_by_user_id(user_id)
+        if not worker_role or not any(
+            link["role_id"] == worker_role["id"] for link in role_links
+        ):
+            raise NotFoundError("User is not a worker in this organization.")
+
+        if payload.full_name is not None or payload.email is not None:
+            new_email: Optional[str] = None
+            if payload.email is not None:
+                new_email = payload.email.strip().lower()
+                existing = self.users_repo.get_by_email(organization_id, new_email)
+                if existing and str(existing["id"]) != str(user_id):
+                    raise ConflictError(
+                        f"A user with email '{new_email}' already exists in this organization."
+                    )
+            updated_user = self.users_repo.update_details(
+                user_id=user_id,
+                full_name=payload.full_name,
+                email=new_email,
+            )
+            if not updated_user:
+                raise NotFoundError("Worker not found in this organization.")
+            if payload.full_name is not None:
+                changes["full_name"] = payload.full_name
+            if new_email is not None:
+                changes["email"] = new_email
+
+        if payload.badge_number is not None:
+            updated_profile = self.workers_repo.update_badge(
+                user_id=user_id, badge_number=payload.badge_number
+            )
+            if not updated_profile:
+                raise NotFoundError("Worker profile not found for this user.")
+            changes["badge_number"] = payload.badge_number
+
+        if payload.department_id is not None:
+            dept = self.depts_repo.get_by_id(payload.department_id)
+            if not dept or dept["organization_id"] != organization_id:
+                raise NotFoundError("Department not found in this organization.")
+            for link in self.user_departments_repo.get_by_user_id(user_id):
+                self.user_departments_repo.delete(
+                    user_id=user_id, department_id=link["department_id"]
+                )
+            self.user_departments_repo.create(
+                user_id=user_id, department_id=dept["id"]
+            )
+            changes["department_id"] = str(dept["id"])
+
+        if payload.status is not None:
+            if payload.status not in ("active", "suspended"):
+                raise ValidationError("status must be 'active' or 'suspended'.")
+            self.users_repo.update_status(user_id=user_id, status=payload.status)
+            changes["status"] = payload.status
+
+        self.audit_repo.create(
+            organization_id=organization_id,
+            actor_user_id=actor_id,
+            event_type="worker.updated",
+            resource_type="user",
+            resource_id=user_id,
+            event_data=changes,
+        )
+        return {
+            "message": "Worker details successfully updated.",
+            "user_id": str(user_id),
+            "changes": changes,
+        }
+
+    def _workflow_item(self, wf_row: Dict[str, Any]) -> WorkflowTemplate:
+        """Build a WorkflowTemplate response from database rows."""
+        step_rows = self.workflow_steps_repo.list_by_workflow_id(wf_row["id"])
+        steps = [
+            WorkflowStepItem(
+                step_number=row["step_order"],
+                title=row["name"],
+                instruction=row.get("description") or "",
+                is_safety_critical=bool(row.get("is_safety_critical", False)),
+                expected_duration_seconds=int(row.get("expected_duration_seconds") or 120),
+                required_intent=row.get("required_intent"),
+            )
+            for row in sorted(step_rows, key=lambda r: r["step_order"])
         ]
+        department_id = wf_row.get("department_id")
+        department_name = None
+        if department_id:
+            dept = self.depts_repo.get_by_id(department_id)
+            if dept:
+                department_name = dept["name"]
+        return WorkflowTemplate(
+            id=wf_row["id"],
+            organization_id=wf_row["organization_id"],
+            name=wf_row["name"],
+            description=wf_row.get("description"),
+            department_id=department_id,
+            department_name=department_name,
+            version=int(wf_row.get("version") or 1),
+            status=wf_row["status"],
+            step_count=len(steps),
+            estimated_duration_minutes=float(wf_row.get("estimated_duration_minutes") or 15.0),
+            steps=steps,
+            created_at=wf_row["created_at"],
+            updated_at=wf_row["updated_at"],
+        )
+
+    @staticmethod
+    def _step_spec(raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and normalise one step payload entry."""
+        title = (raw.get("title") or "").strip()
+        if not title:
+            raise ValidationError("Each workflow step requires a title.")
+        duration = raw.get("expected_duration_seconds", 120)
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            raise ValidationError("expected_duration_seconds must be an integer.")
+        if duration <= 0:
+            raise ValidationError("expected_duration_seconds must be positive.")
+        intent = raw.get("required_intent")
+        if intent is not None:
+            intent = str(intent).strip() or None
+        return {
+            "title": title,
+            "instruction": raw.get("instruction") or "",
+            "is_safety_critical": bool(raw.get("is_safety_critical", False)),
+            "expected_duration_seconds": duration,
+            "required_intent": intent,
+        }
+
+    def list_workflows(self, organization_id: UUID) -> List[WorkflowTemplate]:
+        """List enterprise workflow templates (real rows + their steps)."""
+        rows = self.workflows_repo.list_by_organization_id(organization_id)
+        return [self._workflow_item(row) for row in rows]
 
     def create_workflow(
         self,
@@ -654,52 +977,78 @@ class OrganizationManagementService:
         payload: WorkflowCreatePayload,
         actor_id: UUID,
     ) -> WorkflowTemplate:
-        """Define an approved organization assembly workflow template."""
-        now = datetime.now(timezone.utc)
-        wf_id = uuid4()
+        """Define an approved organization assembly workflow template.
 
-        dept_name = "General Assembly"
+        The workflow and every step are persisted to PostgreSQL. A duplicate
+        name (pre-check or unique-index race) is a 409 conflict.
+        """
+        department_id = None
         if payload.department_id:
             dept = self.depts_repo.get_by_id(payload.department_id)
-            if dept and dept["organization_id"] == organization_id:
-                dept_name = dept["name"]
+            if not dept or dept["organization_id"] != organization_id:
+                raise ValidationError("Unknown department for this organization.")
+            department_id = dept["id"]
 
-        steps = [
-            WorkflowStepItem(
-                step_number=i + 1,
-                title=s.get("title", f"Step {i + 1}"),
-                instruction=s.get("instruction", ""),
-                is_safety_critical=s.get("is_safety_critical", False),
-                expected_duration_seconds=s.get("expected_duration_seconds", 120),
-                required_intent=s.get("required_intent"),
+        specs = [self._step_spec(step) for step in payload.steps]
+        estimated = float(payload.estimated_duration_minutes or 15.0)
+        if estimated <= 0:
+            raise ValidationError("estimated_duration_minutes must be positive.")
+
+        existing = self.workflows_repo.get_by_organization_and_name(organization_id, payload.name)
+        if existing:
+            raise ConflictError(f"A workflow named '{payload.name}' already exists.")
+
+        workflow_row: Dict[str, Any] | None = None
+        created_step_ids: List[UUID] = []
+        try:
+            workflow_row = self.workflows_repo.create(
+                organization_id=organization_id,
+                name=payload.name,
+                description=payload.description,
+                status="active",
+                department_id=department_id,
+                version=1,
+                estimated_duration_minutes=estimated,
             )
-            for i, s in enumerate(payload.steps)
-        ]
+            for index, spec in enumerate(specs, start=1):
+                step_row = self.workflow_steps_repo.create(
+                    workflow_id=workflow_row["id"],
+                    step_order=index,
+                    name=spec["title"],
+                    description=spec["instruction"],
+                    status="active",
+                    is_safety_critical=spec["is_safety_critical"],
+                    expected_duration_seconds=spec["expected_duration_seconds"],
+                    required_intent=spec["required_intent"],
+                )
+                created_step_ids.append(step_row["id"])
+        except errors.UniqueViolation:
+            # Duplicate (organization_id, name) raced past the pre-check.
+            raise ConflictError(f"A workflow named '{payload.name}' already exists.")
+        except Exception:
+            # Partial failure: remove any rows already written (separate
+            # connections per repo call, so no transaction rolls back for us).
+            for step_id in created_step_ids:
+                try:
+                    self.workflow_steps_repo.delete_by_id(step_id)
+                except Exception:
+                    pass
+            if workflow_row is not None:
+                try:
+                    self.workflows_repo.delete_by_id(workflow_row["id"])
+                except Exception:
+                    pass
+            raise
 
         self.audit_repo.create(
             organization_id=organization_id,
             actor_user_id=actor_id,
             event_type="workflow.created",
             resource_type="workflow",
-            resource_id=wf_id,
-            event_data={"name": payload.name, "step_count": len(steps)},
+            resource_id=workflow_row["id"],
+            event_data={"name": payload.name, "step_count": len(specs)},
         )
-
-        return WorkflowTemplate(
-            id=wf_id,
-            organization_id=organization_id,
-            name=payload.name,
-            description=payload.description,
-            department_id=payload.department_id,
-            department_name=dept_name,
-            version=1,
-            status="active",
-            step_count=len(steps),
-            estimated_duration_minutes=payload.estimated_duration_minutes or 15.0,
-            steps=steps,
-            created_at=now,
-            updated_at=now,
-        )
+        return self._workflow_item(workflow_row)
 
     def update_workflow(
         self,
@@ -707,143 +1056,377 @@ class OrganizationManagementService:
         workflow_id: UUID,
         payload: WorkflowUpdatePayload,
         actor_id: UUID,
-    ) -> Dict[str, Any]:
-        """Update approved workflow configuration."""
+    ) -> WorkflowTemplate:
+        """Update an approved workflow definition — persisted, not audit-only."""
+        wf = self.workflows_repo.get_by_id(workflow_id)
+        if not wf or wf["organization_id"] != organization_id:
+            raise NotFoundError("Workflow not found.")
+
+        changes = payload.model_dump(exclude_unset=True)
+        name = changes.get("name", wf["name"])
+        description = changes.get("description", wf.get("description"))
+        status_value = changes.get("status", wf["status"])
+        if status_value not in ("active", "inactive", "archived"):
+            raise ValidationError("status must be one of: active, inactive, archived.")
+
+        department_id = wf.get("department_id")
+        if "department_id" in changes:
+            new_dept = changes["department_id"]
+            if new_dept is None:
+                department_id = None
+            else:
+                dept = self.depts_repo.get_by_id(new_dept)
+                if not dept or dept["organization_id"] != organization_id:
+                    raise ValidationError("Unknown department for this organization.")
+                department_id = dept["id"]
+
+        if "name" in changes and name != wf["name"]:
+            clash = self.workflows_repo.get_by_organization_and_name(organization_id, name)
+            if clash and clash["id"] != workflow_id:
+                raise ConflictError(f"A workflow named '{name}' already exists.")
+
+        try:
+            updated = self.workflows_repo.update(
+                workflow_id,
+                name=name,
+                description=description,
+                status=status_value,
+                department_id=department_id,
+                version=int(wf.get("version") or 1) + 1,
+                estimated_duration_minutes=wf.get("estimated_duration_minutes") or 15.0,
+            )
+        except errors.UniqueViolation:
+            raise ConflictError(f"A workflow named '{name}' already exists.")
+        if not updated:
+            raise NotFoundError("Workflow not found.")
+
+        step_count = None
+        if changes.get("steps") is not None:
+            specs = [self._step_spec(step) for step in changes["steps"]]
+            self._replace_steps(workflow_id, specs)
+            step_count = len(specs)
+
         self.audit_repo.create(
             organization_id=organization_id,
             actor_user_id=actor_id,
             event_type="workflow.updated",
             resource_type="workflow",
             resource_id=workflow_id,
-            event_data=payload.model_dump(exclude_unset=True),
+            event_data={
+                "changed": sorted(changes.keys()),
+                "step_count": step_count,
+            },
         )
-        return {"message": "Workflow template successfully updated."}
+        return self._workflow_item(updated)
+
+    def _replace_steps(self, workflow_id: UUID, specs: List[Dict[str, Any]]) -> None:
+        """Sync workflow_steps to exactly ``specs`` (ordered 1..N).
+
+        Steps with execution history cannot be removed — the foreign key
+        surfaces that as a 409 instead of silent data loss.
+        """
+        existing = self.workflow_steps_repo.list_by_workflow_id(workflow_id)
+        by_order = {row["step_order"]: row for row in existing}
+
+        try:
+            for order in sorted(by_order):
+                if order > len(specs):
+                    self.workflow_steps_repo.delete_by_id(by_order[order]["id"])
+            for index, spec in enumerate(specs, start=1):
+                match = by_order.get(index)
+                if match:
+                    self.workflow_steps_repo.update(
+                        match["id"],
+                        step_order=index,
+                        name=spec["title"],
+                        description=spec["instruction"],
+                        status="active",
+                        is_safety_critical=spec["is_safety_critical"],
+                        expected_duration_seconds=spec["expected_duration_seconds"],
+                        required_intent=spec["required_intent"],
+                    )
+                else:
+                    self.workflow_steps_repo.create(
+                        workflow_id=workflow_id,
+                        step_order=index,
+                        name=spec["title"],
+                        description=spec["instruction"],
+                        status="active",
+                        is_safety_critical=spec["is_safety_critical"],
+                        expected_duration_seconds=spec["expected_duration_seconds"],
+                        required_intent=spec["required_intent"],
+                    )
+        except errors.ForeignKeyViolation:
+            raise ConflictError(
+                "Workflow steps with execution history cannot be removed. "
+                "Create a new workflow instead."
+            )
 
     # =========================================================================
     # 7. Assistance Overview & Emergency Events (§ 19, § 20)
     # =========================================================================
 
     def get_assistance_overview(self, organization_id: UUID) -> List[Dict[str, Any]]:
-        """Organization-wide assistance activity overview."""
-        now = datetime.now(timezone.utc)
-        return [
-            {
-                "id": "70000000-0000-0000-0000-000000000001",
-                "worker_name": "Samira Chen",
-                "department_name": "Quality Control & Diagnostics",
-                "supervisor_name": "Marcus Vance",
-                "task_name": "High-Voltage Isolation Check",
-                "priority": "high",
-                "reason": "Dielectric probe calibration error on step 3.",
-                "status": "open",
-                "requested_at": now.isoformat(),
-            },
-            {
-                "id": "70000000-0000-0000-0000-000000000002",
-                "worker_name": "Alex Morgan",
-                "department_name": "Powertrain & Gearbox Integration",
-                "supervisor_name": "Marcus Vance",
-                "task_name": "Inverter Sub-Assembly Alpha",
-                "priority": "normal",
-                "reason": "Capacitor polarity marking clarification requested on Step 1.",
-                "status": "in_progress",
-                "requested_at": now.isoformat(),
-            },
-        ]
+        """Organization-wide assistance activity from assistance_requests rows."""
+        rows = self.assistance_repo.list_by_organization_id(organization_id)
+        overview: List[Dict[str, Any]] = []
+        for r in rows:
+            worker = self.workers_repo.get_by_id(r["worker_profile_id"])
+            user = self.users_repo.get_by_id(worker["user_id"]) if worker else None
+            worker_name = None
+            if user:
+                worker_name = user.get("full_name") or user.get("email")
+
+            department_name = None
+            if user:
+                link = self.user_departments_repo.get_by_user_id(user["id"])
+                if link:
+                    dept = self.depts_repo.get_by_id(link[0]["department_id"])
+                    if dept:
+                        department_name = dept["name"]
+
+            task_name = None
+            if r.get("worker_task_assignment_id"):
+                assignment = self.worker_task_assignments_repo.get_by_id(
+                    r["worker_task_assignment_id"]
+                )
+                if assignment:
+                    task = self.tasks_repo.get_by_id(assignment["task_id"])
+                    if task:
+                        task_name = task.get("name")
+
+            reason = r.get("reason") or ""
+            is_emergency = (
+                r.get("priority") == "urgent" or "emergency" in reason.lower()
+            )
+            overview.append({
+                "id": str(r["id"]),
+                "worker_name": worker_name,
+                "department_name": department_name,
+                "supervisor_name": None,  # no supervisor column exists; honest null
+                "task_name": task_name,
+                "priority": r.get("priority"),
+                "reason": reason or None,
+                "status": r.get("status"),
+                "requested_at": r["requested_at"].isoformat() if r.get("requested_at") else None,
+                "resolved_at": r["resolved_at"].isoformat() if r.get("resolved_at") else None,
+                "is_emergency": is_emergency,
+            })
+        return overview
 
     def get_emergency_events(self, organization_id: UUID) -> List[Dict[str, Any]]:
-        """Surface emergency safety halt events across the organization."""
-        return []
+        """Active emergency safety halt events from assistance_requests (urgent + open)."""
+        return [
+            e for e in self.get_assistance_overview(organization_id)
+            if e.get("is_emergency")
+            and e.get("status") in ("open", "acknowledged", "in_progress")
+        ]
 
-    # =========================================================================
     # 8. Operational & Accessibility Analytics (§ 21, § 22)
     # =========================================================================
 
     def get_organization_analytics(self, organization_id: UUID) -> OrganizationAnalyticsSummary:
-        """Provide aggregate non-medical operational and accessibility analytics."""
+        """Aggregate operational + accessibility analytics from PostgreSQL.
+
+        Previously tasks_completed_count=19, tasks_in_progress_count=3,
+        average_task_duration_minutes=8.2, workflow_completion_rate=94.5,
+        total_assistance_requests=6, average_resolution_time_minutes=1.5 and
+        emergency_stops_count=0 were hardcoded constants. Every value is now
+        computed from real rows.
+        """
         workers = self.list_workers(organization_id, page=1, page_size=500)["items"]
         total = len(workers)
-        active = sum(1 for w in workers if w.status in ("WORKING", "READY", "ONBOARDING"))
+        active = sum(1 for w in workers if w.status not in ("DEACTIVATED", "INVITED"))
 
         gesture_ready = sum(1 for w in workers if w.interaction_mode in ("gesture", "multimodal"))
         voice_ready = sum(1 for w in workers if w.interaction_mode in ("voice", "multimodal"))
         multi_ready = sum(1 for w in workers if w.interaction_mode == "multimodal")
         needing_training = sum(1 for w in workers if not w.training_completed)
 
+        # Task metrics from real assignments
+        assigned_count = 0
+        completed_count = 0
+        in_progress_count = 0
+        durations: List[float] = []
+        for task in self.tasks_repo.list_by_organization_id(organization_id):
+            for a in self.worker_task_assignments_repo.list_by_task_id(task["id"]):
+                assigned_count += 1
+                st = a.get("status")
+                if st == "completed":
+                    completed_count += 1
+                    if a.get("started_at") and a.get("completed_at"):
+                        dur = (a["completed_at"] - a["started_at"]).total_seconds() / 60.0
+                        durations.append(dur)
+                elif st in ("in_progress", "assigned", "paused"):
+                    in_progress_count += 1
+
+        avg_duration = round(sum(durations) / len(durations), 1) if durations else 0.0
+        completion_rate = (
+            round((completed_count / assigned_count) * 100.0, 1) if assigned_count else 0.0
+        )
+
+        # Assistance metrics from real rows
+        assistance_rows = self.assistance_repo.list_by_organization_id(organization_id)
+        total_assistance = len(assistance_rows)
+        resolution_times: List[float] = []
+        emergency_count = 0
+        for r in assistance_rows:
+            if r.get("resolved_at") and r.get("requested_at"):
+                delta = r["resolved_at"] - r["requested_at"]
+                resolution_times.append(delta.total_seconds() / 60.0)
+            reason = (r.get("reason") or "").lower()
+            if (
+                r.get("priority") == "urgent" or "emergency" in reason
+            ) and r.get("status") in ("open", "acknowledged", "in_progress"):
+                emergency_count += 1
+        avg_resolution = (
+            round(sum(resolution_times) / len(resolution_times), 1) if resolution_times else 0.0
+        )
+
         return OrganizationAnalyticsSummary(
             organization_id=organization_id,
             total_workers=total,
             active_workers=active,
-            tasks_completed_count=19,
-            tasks_in_progress_count=3,
-            average_task_duration_minutes=8.2,
-            workflow_completion_rate=94.5,
-            total_assistance_requests=6,
-            average_resolution_time_minutes=1.5,
-            emergency_stops_count=0,
+            tasks_completed_count=completed_count,
+            tasks_in_progress_count=in_progress_count,
+            average_task_duration_minutes=avg_duration,
+            workflow_completion_rate=completion_rate,
+            total_assistance_requests=total_assistance,
+            average_resolution_time_minutes=avg_resolution,
+            emergency_stops_count=emergency_count,
             gesture_ready_workers_count=gesture_ready,
             voice_ready_workers_count=voice_ready,
             multimodal_ready_workers_count=multi_ready,
             workers_needing_training_count=needing_training,
         )
 
-    # =========================================================================
     # 9. Immutable Audit Log Trail (§ 23)
     # =========================================================================
 
     def query_audit_logs(self, organization_id: UUID, limit: int = 50) -> List[OrganizationAuditEventItem]:
-        """Query append-only immutable audit trail for the organization."""
-        records = self.audit_repo.list_by_organization_id(organization_id, limit=limit)
+        """Query append-only immutable audit trail for the organization.
+
+        Actor names/roles are resolved from the users and user_roles tables
+        (never fabricated), and an empty trail returns an empty list instead
+        of a seeded fake stream.
+        """
+        records = self.audit_repo.list_by_organization_id(organization_id)
+        records = list(records)[: max(1, limit)]
         now = datetime.now(timezone.utc)
-        if records:
-            return [
+
+        actor_cache: Dict[Any, tuple] = {}
+
+        def _actor(uid: Any) -> tuple:
+            if uid is None:
+                return ("system", "system")
+            if uid in actor_cache:
+                return actor_cache[uid]
+            user = self.users_repo.get_by_id(uid) if uid else None
+            if user:
+                name = user.get("full_name") or user.get("email") or str(uid)
+            else:
+                name = "deleted user"
+            role = "user"
+            assignments = self.user_roles_repo.get_by_user_id(uid)
+            if assignments:
+                role_row = self.roles_repo.get_by_id(assignments[0]["role_id"])
+                if role_row:
+                    role = role_row.get("name") or "user"
+            actor_cache[uid] = (name, role)
+            return actor_cache[uid]
+
+        items: List[OrganizationAuditEventItem] = []
+        for r in records:
+            actor_name, actor_role = _actor(r.get("actor_user_id"))
+            items.append(
                 OrganizationAuditEventItem(
                     id=r["id"],
                     organization_id=r["organization_id"],
-                    actor_name="Administrator",
-                    actor_role="admin",
+                    actor_name=actor_name,
+                    actor_role=actor_role,
                     event_type=r["event_type"],
                     resource_type=r["resource_type"],
                     resource_id=r.get("resource_id"),
-                    occurred_at=r.get("occurred_at") or now,
+                    occurred_at=r.get("occurred_at") or r.get("created_at") or now,
                     event_data=r.get("event_data") or {},
                 )
-                for r in records
-            ]
+            )
+        return items
 
-        # Seeded default audit stream
+    # =========================================================================
+    # 9. Organization-Owned Datasets & Records (Phase 7)
+    # =========================================================================
+
+    def list_datasets(self, organization_id: UUID) -> List[DatasetItem]:
+        """
+        List the organization's own datasets with real record counts and the
+        record types present. Strictly organization-scoped (server-side).
+        """
+        rows = self.datasets_repo.list_by_organization(organization_id)
         return [
-            OrganizationAuditEventItem(
-                id=UUID("a0000000-0000-0000-0000-000000000001"),
-                organization_id=organization_id,
-                actor_name="Sarah Jenkins (Admin)",
-                actor_role="admin",
-                event_type="department.created",
-                resource_type="department",
-                resource_id=UUID("11111111-1111-1111-1111-111111111111"),
-                occurred_at=now,
-                event_data={"name": "Powertrain & Gearbox Integration"},
-            ),
-            OrganizationAuditEventItem(
-                id=UUID("a0000000-0000-0000-0000-000000000002"),
-                organization_id=organization_id,
-                actor_name="Sarah Jenkins (Admin)",
-                actor_role="admin",
-                event_type="supervisor.invited",
-                resource_type="user",
-                resource_id=UUID("c0000000-0000-0000-0000-000000000002"),
-                occurred_at=now,
-                event_data={"email": "supervisor@amap.com", "full_name": "Marcus Vance"},
-            ),
-            OrganizationAuditEventItem(
-                id=UUID("a0000000-0000-0000-0000-000000000003"),
-                organization_id=organization_id,
-                actor_name="Sarah Jenkins (Admin)",
-                actor_role="admin",
-                event_type="worker.invited",
-                resource_type="worker_profile",
-                resource_id=UUID("d0000000-0000-0000-0000-000000000005"),
-                occurred_at=now,
-                event_data={"email": "maria.newhire@amap.com", "full_name": "Maria Rodriguez"},
-            ),
+            DatasetItem(
+                id=r["id"],
+                organization_id=r["organization_id"],
+                name=r["name"],
+                description=r.get("description"),
+                domain=r.get("domain") or "general",
+                status=r.get("status") or "active",
+                record_count=int(r.get("record_count") or 0),
+                record_types=sorted(r.get("record_types") or []),
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+            )
+            for r in rows
         ]
+
+    def list_dataset_records(
+        self,
+        dataset_id: UUID,
+        organization_id: UUID,
+        page: int = 1,
+        page_size: int = 25,
+        record_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        List records inside one of the organization's own datasets with
+        pagination and an optional record-type filter. A dataset belonging to
+        another organization is indistinguishable from a missing one (404).
+        """
+        dataset = self.datasets_repo.get_by_id(dataset_id)
+        if not dataset or dataset["organization_id"] != organization_id:
+            raise NotFoundError(f"Dataset {dataset_id} not found in your organization.")
+
+        rows, total = self.datasets_repo.list_records(
+            dataset_id=dataset_id,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+            record_type=record_type,
+        )
+        items = [
+            DatasetRecordItem(
+                id=r["id"],
+                dataset_id=r["dataset_id"],
+                organization_id=r["organization_id"],
+                record_type=r["record_type"],
+                title=r["title"],
+                source_ref=r.get("source_ref"),
+                payload=r.get("payload") or {},
+                occurred_at=r.get("occurred_at"),
+                related_record_id=r.get("related_record_id"),
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+            )
+            for r in rows
+        ]
+        return {
+            "dataset": {
+                "id": str(dataset["id"]),
+                "name": dataset["name"],
+                "domain": dataset.get("domain") or "general",
+                "status": dataset.get("status") or "active",
+            },
+            "items": items,
+            "total_count": total,
+            "page": page,
+            "page_size": page_size,
+        }

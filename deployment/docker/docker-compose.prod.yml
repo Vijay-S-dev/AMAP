@@ -9,13 +9,34 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - amap_prod_postgres_data:/var/lib/postgresql/data
-      - ../../database/schema/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ../../database/seed/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-amap_user} -d ${POSTGRES_DB:-amap}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - amap-internal
+
+  # Applies database/migrations 001..052 then the seed (idempotent).
+  # The consolidated database/schema/schema.sql snapshot (001-040) is NOT
+  # used: it predates migrations 041-052.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile.backend
+    image: amap-backend:local
+    command:
+      - /bin/sh
+      - -c
+      - |
+        python /app/scripts/migrate.py &&
+        python /app/scripts/seed.py
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-amap_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-amap}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
     networks:
       - amap-internal
 
@@ -45,11 +66,16 @@ services:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       REDIS_URL: redis://:${REDIS_PASSWORD:-amap_redis_secure_pass}@redis:6379/0
       ENVIRONMENT: production
+    # Vosk speech-recognition models are baked into the backend image at
+    # build time (deterministic, checksum-verified — see Dockerfile.backend
+    # stage `vosk-models`). No model downloads at startup, no extra service.
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - amap-internal
 

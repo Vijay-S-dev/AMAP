@@ -42,14 +42,130 @@ WORKER_A_ID = UUID("c0000000-0000-0000-0000-000000000003")
 @pytest.fixture
 def mock_service() -> OrganizationManagementService:
     """Fixture providing a mock OrganizationManagementService with tenant repositories mocked."""
+    from datetime import datetime, timezone
+
     service = OrganizationManagementService(
         orgs_repo=MagicMock(),
         depts_repo=MagicMock(),
         users_repo=MagicMock(),
         workers_repo=MagicMock(),
         workflows_repo=MagicMock(),
+        workflow_steps_repo=MagicMock(),
         audit_repo=MagicMock(),
         assistance_repo=MagicMock(),
+        user_departments_repo=MagicMock(),
+        roles_repo=MagicMock(),
+        user_roles_repo=MagicMock(),
+        worker_readiness_repo=MagicMock(),
+    )
+    # list_workers now reads the real directory query: return an empty page by
+    # default so contract-level tests stay deterministic.
+    service.workers_repo.list_enterprise_directory.return_value = ([], 0)
+    # invite_worker performs a real duplicate-email check before creating rows.
+    service.users_repo.get_by_email.return_value = None
+    # Organization name uniqueness pre-check: no existing org by default.
+    service.orgs_repo.get_by_name.return_value = None
+    now = datetime.now(timezone.utc)
+    created_user_id = uuid4()
+
+    def _fake_create_user(organization_id, email, full_name, password_hash):
+        # Echo the real inputs (matching UsersRepository.create behavior).
+        return {
+            "id": created_user_id,
+            "organization_id": organization_id,
+            "email": email,
+            "full_name": full_name,
+            "password_hash": password_hash,
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    service.users_repo.create.side_effect = _fake_create_user
+    service.workers_repo.create.return_value = {
+        "id": uuid4(),
+        "user_id": created_user_id,
+        "badge_number": None,
+        "status": "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    # list/create/update workflows now read the real repositories: give the
+    # workflow repo a seed row and keep steps in an in-memory store so the
+    # contract tests stay deterministic.
+    seed_workflow_id = uuid4()
+    created_workflow_id = uuid4()
+    workflow_steps_store: dict = {seed_workflow_id: []}
+    service.workflows_repo.list_by_organization_id.return_value = [
+        {
+            "id": seed_workflow_id,
+            "organization_id": ORG_A_ID,
+            "name": "Seeded Assembly Workflow",
+            "description": "Fixture workflow row",
+            "department_id": None,
+            "version": 1,
+            "estimated_duration_minutes": 15.0,
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        }
+    ]
+    service.workflows_repo.get_by_organization_and_name.return_value = None
+
+    def _fake_create_workflow(
+        organization_id,
+        name,
+        description=None,
+        status="active",
+        department_id=None,
+        version=1,
+        estimated_duration_minutes=15.0,
+    ):
+        return {
+            "id": created_workflow_id,
+            "organization_id": organization_id,
+            "name": name,
+            "description": description,
+            "department_id": department_id,
+            "version": version,
+            "estimated_duration_minutes": estimated_duration_minutes,
+            "status": status,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    service.workflows_repo.create.side_effect = _fake_create_workflow
+
+    def _fake_create_workflow_step(
+        workflow_id,
+        step_order,
+        name,
+        description=None,
+        status="active",
+        is_safety_critical=False,
+        expected_duration_seconds=120,
+        required_intent=None,
+    ):
+        row = {
+            "id": uuid4(),
+            "workflow_id": workflow_id,
+            "step_order": step_order,
+            "name": name,
+            "description": description,
+            "is_safety_critical": is_safety_critical,
+            "expected_duration_seconds": expected_duration_seconds,
+            "required_intent": required_intent,
+            "status": status,
+            "created_at": now,
+            "updated_at": now,
+        }
+        workflow_steps_store.setdefault(workflow_id, []).append(row)
+        return row
+
+    service.workflow_steps_repo.create.side_effect = _fake_create_workflow_step
+    service.workflow_steps_repo.list_by_workflow_id.side_effect = (
+        lambda workflow_id: workflow_steps_store.get(workflow_id, [])
     )
     return service
 
@@ -156,9 +272,22 @@ def test_department_crud_and_tenant_isolation(mock_service):
         roles=["admin"],
         is_active=True,
     )
+    from datetime import datetime, timezone
+
     dept_id = uuid4()
-    mock_service.depts_repo.list_by_organization.return_value = [
-        {"id": dept_id, "organization_id": ORG_A_ID, "name": "Powertrain Integration", "status": "active"}
+    now = datetime.now(timezone.utc)
+    mock_service.depts_repo.list_by_organization_with_counts.return_value = [
+        {
+            "id": dept_id,
+            "organization_id": ORG_A_ID,
+            "name": "Powertrain Integration",
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+            "supervisor_count": 0,
+            "worker_count": 0,
+            "active_tasks_count": 0,
+        }
     ]
     mock_service.depts_repo.get_by_name.return_value = None
     mock_service.depts_repo.create.return_value = {
@@ -166,6 +295,19 @@ def test_department_crud_and_tenant_isolation(mock_service):
         "organization_id": ORG_A_ID,
         "name": "Chassis Welding",
         "status": "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+    mock_service.depts_repo.get_with_counts.side_effect = lambda department_id: {
+        "id": department_id,
+        "organization_id": ORG_A_ID,
+        "name": "Chassis Welding",
+        "status": "active",
+        "created_at": now,
+        "updated_at": now,
+        "supervisor_count": 0,
+        "worker_count": 0,
+        "active_tasks_count": 0,
     }
     app.dependency_overrides[get_org_management_service] = lambda: mock_service
 
@@ -376,9 +518,42 @@ def test_organization_analytics_and_audit_trail(mock_service):
         assert "tasks_completed_count" in res_an.json()
         assert "gesture_ready_workers_count" in res_an.json()
 
-        # Audit Trail
+        # Audit Trail — empty repository must yield an empty list (the old
+        # implementation fabricated a "seeded default audit stream" here).
         res_aud = client.get("/api/v1/organizations/manage/audit?limit=25")
         assert res_aud.status_code == status.HTTP_200_OK
-        assert len(res_aud.json()) >= 1
+        assert res_aud.json() == []
+
+        # With a real audit row, the actor is resolved from users/roles.
+        from datetime import datetime as _dt, timezone as _tz
+        mock_service.audit_repo.list_by_organization_id.return_value = [
+            {
+                "id": ADMIN_A_ID,
+                "organization_id": ORG_A_ID,
+                "actor_user_id": ADMIN_A_ID,
+                "event_type": "department.created",
+                "resource_type": "department",
+                "resource_id": None,
+                "event_data": {"name": "Welding"},
+                "occurred_at": _dt.now(_tz.utc),
+                "created_at": _dt.now(_tz.utc),
+            }
+        ]
+        mock_service.users_repo.get_by_id.return_value = {
+            "id": ADMIN_A_ID,
+            "full_name": "Sarah Jenkins",
+            "email": "admin@amap.com",
+        }
+        mock_service.user_roles_repo.get_by_user_id.return_value = [
+            {"role_id": ADMIN_A_ID}
+        ]
+        mock_service.roles_repo.get_by_id.return_value = {"name": "admin"}
+        res_aud = client.get("/api/v1/organizations/manage/audit?limit=25")
+        assert res_aud.status_code == status.HTTP_200_OK
+        items = res_aud.json()
+        assert len(items) == 1
+        assert items[0]["actor_name"] == "Sarah Jenkins"
+        assert items[0]["actor_role"] == "admin"
+        assert items[0]["event_type"] == "department.created"
     finally:
         app.dependency_overrides.clear()

@@ -12,6 +12,7 @@ from uuid import UUID
 from models.task import TaskRead
 from models.worker import WorkerTaskAssignmentRead
 from repositories.tasks import TasksRepository
+from repositories.task_evidence import TaskEvidenceRepository
 from repositories.task_results import TaskResultsRepository
 from repositories.task_workflows import TaskWorkflowsRepository
 from repositories.worker_task_assignments import WorkerTaskAssignmentsRepository
@@ -35,6 +36,7 @@ class TaskService:
         workflow_steps_repo: Optional[WorkflowStepsRepository] = None,
         workflow_assignments_repo: Optional[WorkflowAssignmentsRepository] = None,
         step_executions_repo: Optional[WorkflowStepExecutionsRepository] = None,
+        task_evidence_repo: Optional[TaskEvidenceRepository] = None,
     ) -> None:
         self.tasks_repo = tasks_repo or TasksRepository()
         self.task_assignments_repo = task_assignments_repo or WorkerTaskAssignmentsRepository()
@@ -44,6 +46,7 @@ class TaskService:
         self.workflow_steps_repo = workflow_steps_repo or WorkflowStepsRepository()
         self.workflow_assignments_repo = workflow_assignments_repo or WorkflowAssignmentsRepository()
         self.step_executions_repo = step_executions_repo or WorkflowStepExecutionsRepository()
+        self.task_evidence_repo = task_evidence_repo or TaskEvidenceRepository()
 
     def get_worker_assignments(self, worker_profile_id: UUID) -> List[WorkerTaskAssignmentRead]:
         """Return all task assignments for a worker profile (strictly read-only)."""
@@ -88,12 +91,21 @@ class TaskService:
             completed_at=None,
         ))
 
-        # Legitimate write lifecycle: Ensure workflow_assignment exists and is in_progress
+        # Legitimate write lifecycle: ensure an ACTIVE workflow assignment
+        # exists for this task cycle. A completed/cancelled workflow
+        # assignment belongs to a previous cycle and must NOT be re-animated.
         tw_links = self.task_workflows_repo.list_by_task_id(assignment["task_id"])
         if tw_links:
             target_wf_id = tw_links[0]["workflow_id"]
             wf_assignments = self.workflow_assignments_repo.list_by_worker_profile_id(worker_profile_id)
-            existing_wf = next((wa for wa in wf_assignments if wa["workflow_id"] == target_wf_id), None)
+            existing_wf = next(
+                (
+                    wa for wa in wf_assignments
+                    if wa["workflow_id"] == target_wf_id
+                    and wa.get("status") in ("assigned", "in_progress", "paused")
+                ),
+                None,
+            )
             if existing_wf:
                 if existing_wf.get("status") != "in_progress":
                     self.workflow_assignments_repo.update_status(
@@ -133,6 +145,29 @@ class TaskService:
         if assignment.get("status") in ("completed", "cancelled"):
             raise ConflictError(f"Cannot complete an already {assignment['status']} task assignment.")
 
+        # Investigation-task decision enforcement: when the task defines
+        # decision options, a completion must carry a valid worker
+        # classification in result_data.classification.
+        if outcome == "completed" and assignment.get("task_id"):
+            decision_task = self.tasks_repo.get_by_id(assignment["task_id"])
+            decision_options = (
+                decision_task.get("decision_options")
+                if isinstance(decision_task, dict)
+                else None
+            )
+            if isinstance(decision_options, (list, tuple)) and decision_options:
+                classification = (result_data or {}).get("classification")
+                if not classification:
+                    raise ValidationError(
+                        "This task requires a decision: set result_data.classification "
+                        "to one of the allowed options."
+                    )
+                if classification not in decision_options:
+                    raise ValidationError(
+                        f"Invalid classification '{classification}'. "
+                        f"Allowed options: {list(decision_options)}."
+                    )
+
         # Resolve linked workflow steps and verify completion if outcome is 'completed'
         total_steps = 0
         completed_steps = 0
@@ -145,7 +180,16 @@ class TaskService:
             total_steps = len(wf_steps)
             if total_steps > 0:
                 wf_assignments = self.workflow_assignments_repo.list_by_worker_profile_id(worker_profile_id)
-                wf_assign = next((wa for wa in wf_assignments if wa["workflow_id"] == target_wf_id), None)
+                # Count executions of the CURRENT cycle's active workflow
+                # assignment only — a completed one belongs to a previous run.
+                wf_assign = next(
+                    (
+                        wa for wa in wf_assignments
+                        if wa["workflow_id"] == target_wf_id
+                        and wa.get("status") in ("assigned", "in_progress", "paused")
+                    ),
+                    None,
+                )
                 if wf_assign:
                     execs = self.step_executions_repo.list_by_workflow_assignment_id(wf_assign["id"])
                     completed_step_ids = {
@@ -272,6 +316,28 @@ class TaskService:
         if organization_id and task.get("organization_id") != organization_id:
             raise UnauthorizedError("Task does not belong to user's organization.")
 
+        # Evidence records linked to this task (org-scoped) for
+        # data-backed investigations.
+        evidence_rows = self.task_evidence_repo.list_by_task_id(
+            task_id, organization_id=task.get("organization_id")
+        )
+        evidence = [
+            {
+                "id": str(row["id"]),
+                "dataset_name": row.get("dataset_name"),
+                "record_type": row.get("record_type"),
+                "title": row.get("title"),
+                "source_ref": row.get("source_ref"),
+                "payload": row.get("payload") or {},
+                "occurred_at": row.get("occurred_at"),
+                "related_record_id": (
+                    str(row["related_record_id"]) if row.get("related_record_id") else None
+                ),
+                "relevance": row.get("relevance"),
+            }
+            for row in evidence_rows
+        ]
+
         tw_links = self.task_workflows_repo.list_by_task_id(task_id)
         workflow_id = tw_links[0]["workflow_id"] if tw_links else None
         steps: List[Dict[str, Any]] = []
@@ -281,9 +347,10 @@ class TaskService:
                 {
                     "id": str(s["id"]),
                     "stepNumber": s.get("step_order", idx + 1),
-                    "title": s.get("title", f"Step {idx + 1}"),
-                    "instructionText": s.get("instruction", ""),
+                    "title": s.get("name") or s.get("title") or f"Step {idx + 1}",
+                    "instructionText": s.get("description") or s.get("instruction") or "",
                     "isSafetyCritical": s.get("is_safety_critical", False),
+                    "expectedDurationSeconds": s.get("expected_duration_seconds"),
                     "spatialTargetId": s.get("spatial_target_id") if "spatial_target_id" in s else None,
                 }
                 for idx, s in enumerate(raw_steps)
@@ -298,7 +365,28 @@ class TaskService:
             "workflow_id": str(workflow_id) if workflow_id else None,
             "total_steps": len(steps),
             "steps": steps,
+            "evidence": evidence,
+            "evidence_count": len(evidence),
+            "decision_prompt": task.get("decision_prompt"),
+            "decision_options": task.get("decision_options") or [],
         }
+
+    def get_step_executions(
+        self,
+        workflow_assignment_id: UUID,
+        worker_profile_id: UUID,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return the worker's own workflow step executions (completed + others)
+        for an assignment so clients can restore persisted progress after a
+        refresh or re-login. Enforces worker ownership of the assignment.
+        """
+        assignment = self.workflow_assignments_repo.get_by_id(workflow_assignment_id)
+        if not assignment:
+            raise NotFoundError(f"Workflow assignment {workflow_assignment_id} not found.")
+        if assignment["worker_profile_id"] != worker_profile_id:
+            raise UnauthorizedError("Workflow assignment does not belong to this worker.")
+        return self.step_executions_repo.list_by_workflow_assignment_id(workflow_assignment_id)
 
     def get_workflow_steps(self, workflow_id: UUID) -> List[Dict[str, Any]]:
         """Return ordered steps for a workflow."""
@@ -324,21 +412,14 @@ class TaskService:
         if assignment["worker_profile_id"] != worker_profile_id:
             raise UnauthorizedError("Workflow assignment does not belong to this worker.")
 
-        # MUST FIX #3: Reject step execution if workflow assignment is in a terminal state
+        # Terminal-state gate on the workflow assignment itself. Parent task
+        # assignments are synchronized to terminal states together with the
+        # workflow assignment on completion, so this check is authoritative
+        # (a previous cycle's completed parent must not block a new cycle).
         if assignment.get("status") in ("completed", "cancelled"):
             raise ConflictError(
                 f"Cannot record step execution on {assignment['status']} workflow assignment."
             )
-
-        # Also verify linked parent worker task assignment is not cancelled/completed
-        worker_assignments = self.task_assignments_repo.list_by_worker_profile_id(worker_profile_id)
-        for wa in worker_assignments:
-            tw_links = self.task_workflows_repo.list_by_task_id(wa["task_id"])
-            if any(l.get("workflow_id") == assignment["workflow_id"] for l in tw_links):
-                if wa.get("status") in ("completed", "cancelled"):
-                    raise ConflictError(
-                        f"Cannot record step execution: parent task assignment is {wa['status']}."
-                    )
 
         step = self.workflow_steps_repo.get_by_id(workflow_step_id)
         if not step or step["workflow_id"] != assignment["workflow_id"]:
@@ -364,7 +445,7 @@ class TaskService:
                     if p_step["id"] not in completed_step_ids:
                         raise ConflictError(
                             f"Step order violation: preceding Step {p_step.get('step_order', 1)} "
-                            f"('{p_step.get('title')}') has not been completed."
+                            f"('{p_step.get('name') or p_step.get('title')}') has not been completed."
                         )
 
         now = datetime.now(timezone.utc)

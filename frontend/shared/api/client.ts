@@ -8,6 +8,7 @@
  */
 
 import {
+  AdaptationReviewItem,
   AssistanceTicket,
   CustomGestureProfile,
   InteractionPreset,
@@ -15,6 +16,7 @@ import {
   MultimodalFusionResult,
   MultimodalInput,
   MultimodalInputItem,
+  PermissionMatrix,
   TaskDetails,
   UserContext,
   WorkerPersonalization,
@@ -78,6 +80,24 @@ class ApiClient {
 
   getToken(): string | null {
     return this.token;
+  }
+
+  /**
+   * Authenticated Vosk streaming WebSocket URL for voice recognition.
+   * Browsers cannot set the Authorization header on WebSocket connections,
+   * so the JWT travels as a query parameter and is verified server-side with
+   * the exact same AuthService used by the REST API.
+   */
+  getVoiceStreamUrl(language: string, token: string): string {
+    let base = API_BASE;
+    if (base.startsWith('/')) {
+      // Relative API base (e.g. "/api/v1" behind the Next.js proxy): resolve
+      // against the page origin — WebSocket URLs must be absolute.
+      base = `${typeof window !== 'undefined' ? window.location.origin : ''}${base}`;
+    }
+    const wsBase = base.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+    const params = new URLSearchParams({ token, language });
+    return `${wsBase}/voice/stream?${params.toString()}`;
   }
 
   getHeaders(): HeadersInit {
@@ -200,6 +220,56 @@ class ApiClient {
     return await this.request<WorkSession>('/sessions/active');
   }
 
+  async startWorkSession(): Promise<WorkSession> {
+    return await this.request<WorkSession>('/sessions/start', { method: 'POST' });
+  }
+
+  async heartbeatWorkSession(workSessionId?: string | null): Promise<WorkSession | null> {
+    return await this.request<WorkSession | null>('/sessions/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify(workSessionId ? { work_session_id: workSessionId } : {}),
+    });
+  }
+
+  async pauseWorkSession(workSessionId: string): Promise<WorkSession> {
+    return await this.request<WorkSession>(`/sessions/${workSessionId}/pause`, { method: 'POST' });
+  }
+
+  async resumeWorkSession(workSessionId: string): Promise<WorkSession> {
+    return await this.request<WorkSession>(`/sessions/${workSessionId}/resume`, { method: 'POST' });
+  }
+
+  async endWorkSession(workSessionId: string): Promise<WorkSession> {
+    return await this.request<WorkSession>(`/sessions/${workSessionId}/end?status=completed`, {
+      method: 'POST',
+    });
+  }
+
+  async getGestureMapping(): Promise<{
+    worker_profile_id: string;
+    gesture_action_map: Record<string, string>;
+    sources: Record<string, string>;
+    calibration: Record<string, any>;
+  }> {
+    return await this.request('/personalization/me/gesture-mapping');
+  }
+
+  async updateGestureMapping(payload: {
+    gesture_action_map?: Record<string, string>;
+    calibration?: Record<string, any>;
+    change_reason?: string;
+  }): Promise<{
+    worker_profile_id: string;
+    gesture_action_map: Record<string, string>;
+    sources: Record<string, string>;
+    calibration: Record<string, any>;
+  }> {
+    return await this.request('/personalization/me/gesture-mapping', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async getWorkerReadiness(workerId: string): Promise<{
     worker_id: string;
     is_fresher: boolean;
@@ -244,6 +314,12 @@ class ApiClient {
     return await this.request<any>(`/tasks/assignments/${assignmentId}/start`, {
       method: 'POST',
     });
+  }
+
+  async getStepExecutions(workflowAssignmentId: string): Promise<any[]> {
+    return await this.request<any[]>(
+      `/tasks/workflows/assignments/${workflowAssignmentId}/executions`
+    );
   }
 
   async getTaskDetails(taskId: string): Promise<TaskDetails> {
@@ -340,6 +416,28 @@ class ApiClient {
     });
   }
 
+  // Phase 12: stream camera-frame landmarks through the server gesture pipeline
+  async processGestureFrame(payload: {
+    landmarks: { x: number; y: number; z?: number }[];
+    handedness: 'Right' | 'Left';
+    timestamp_ms: number;
+    dwell_time_ms?: number;
+  }): Promise<{
+    detected_gesture: string | null;
+    confidence: number;
+    is_triggered: boolean;
+    dwell_progress: number;
+    action_mapping: string | null;
+    is_custom: boolean;
+    custom_gesture_id: string | null;
+    message: string;
+  }> {
+    return await this.request('/gestures/process-frame', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async getCustomGestures(): Promise<CustomGestureProfile[]> {
     return await this.request<CustomGestureProfile[]>('/gestures/custom');
   }
@@ -377,64 +475,6 @@ class ApiClient {
       }),
     });
   }
-
-  async transcribeAudio(
-    audioBlob: Blob,
-    language?: string
-  ): Promise<{
-    transcript: string;
-    language: string;
-    detected_language: string;
-    confidence: number;
-    processing_time_ms: number;
-    success: boolean;
-  }> {
-    const formData = new FormData();
-    const extension = audioBlob.type.includes('webm')
-      ? 'webm'
-      : audioBlob.type.includes('ogg')
-      ? 'ogg'
-      : audioBlob.type.includes('mp4')
-      ? 'mp4'
-      : 'wav';
-    formData.append('audio', audioBlob, `voice-command.${extension}`);
-    if (language) formData.append('language', language.split('-')[0]);
-
-    const headers: Record<string, string> = { 'X-Organization-Id': this.orgId };
-    if (this.token) headers.Authorization = `Bearer ${this.token}`;
-
-    let res: Response;
-    try {
-      res = await fetch(`${API_BASE}/voice/transcribe`, {
-        method: 'POST',
-        headers,
-        body: formData,
-      });
-    } catch (err: any) {
-      throw new ApiError(
-        `Transcription service unreachable: ${err?.message || 'Network error'}`,
-        undefined,
-        'NETWORK_ERROR',
-        err
-      );
-    }
-
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '');
-      throw new ApiError(
-        `Audio transcription failed with HTTP ${res.status}${detail ? `: ${detail}` : ''}`,
-        res.status,
-        `HTTP_${res.status}`
-      );
-    }
-
-    const result = await res.json();
-    return { ...result, language: result.detected_language };
-  }
-
-  // --------------------------------------------------------------------------
-  // Multimodal & Safety Endpoints
-  // --------------------------------------------------------------------------
 
   async processMultimodalIntent(
     payloadOrInput: MultimodalFusionPayload | MultimodalInputItem[] | MultimodalInputItem
@@ -669,26 +709,101 @@ class ApiClient {
   // --------------------------------------------------------------------------
 
   async getInteractionPresets(): Promise<InteractionPreset[]> {
-    return [
-      {
-        id: 'preset-1',
-        name: 'Default Factory Floor Preset',
-        description: 'Standard optical tracking with moderate noise tolerance.',
-        status: 'active',
-        dwellTimeMs: 450,
-        gestureSensitivity: 0.85,
-        acousticFloor: 0.6,
-      },
-      {
-        id: 'preset-2',
-        name: 'High Noise Stamping Area',
-        description: 'Elevated acoustic threshold with mandatory gesture confirmation.',
-        status: 'active',
-        dwellTimeMs: 600,
-        gestureSensitivity: 0.9,
-        acousticFloor: 0.75,
-      },
-    ];
+    const rows = await this.request<any[]>('/admin/configs');
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description || undefined,
+      status: r.status,
+      dwellTimeMs: r.config_data?.dwell_time_ms ?? 450,
+      gestureSensitivity: r.config_data?.gesture_sensitivity ?? 0.85,
+      acousticFloor: r.config_data?.acoustic_floor ?? 0.6,
+    }));
+  }
+
+  async createInteractionPreset(payload: {
+    name: string;
+    description?: string;
+    config_data?: Record<string, unknown>;
+  }): Promise<InteractionPreset> {
+    const r = await this.request<any>('/admin/configs', {
+      method: 'POST',
+      body: JSON.stringify({ organization_id: this.orgId, ...payload }),
+    });
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description || undefined,
+      status: r.status,
+      dwellTimeMs: r.config_data?.dwell_time_ms ?? 450,
+      gestureSensitivity: r.config_data?.gesture_sensitivity ?? 0.85,
+      acousticFloor: r.config_data?.acoustic_floor ?? 0.6,
+    };
+  }
+
+  async updateInteractionPreset(
+    presetId: string,
+    payload: {
+      name?: string;
+      description?: string;
+      config_data?: Record<string, unknown>;
+      status?: string;
+    }
+  ): Promise<InteractionPreset> {
+    const r = await this.request<any>(`/admin/configs/${presetId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description || undefined,
+      status: r.status,
+      dwellTimeMs: r.config_data?.dwell_time_ms ?? 450,
+      gestureSensitivity: r.config_data?.gesture_sensitivity ?? 0.85,
+      acousticFloor: r.config_data?.acoustic_floor ?? 0.6,
+    };
+  }
+
+  async deleteInteractionPreset(presetId: string): Promise<boolean> {
+    await this.request(`/admin/configs/${presetId}`, { method: 'DELETE' });
+    return true;
+  }
+
+  // Phase 9: Permission matrix (organization-scoped, PostgreSQL-backed)
+  async getPermissionsMatrix(): Promise<PermissionMatrix> {
+    return await this.request<PermissionMatrix>('/permissions/matrix');
+  }
+
+  async setPermissionGrant(payload: {
+    role_name: string;
+    permission_name: string;
+    granted: boolean;
+  }): Promise<PermissionMatrix> {
+    return await this.request<PermissionMatrix>('/permissions/matrix', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // Phase 9: Adaptation recommendations review (PostgreSQL-backed)
+  async getAdaptationRecommendations(
+    status?: 'pending' | 'approved' | 'dismissed'
+  ): Promise<AdaptationReviewItem[]> {
+    const qs = status ? `?status=${status}` : '';
+    return await this.request<AdaptationReviewItem[]>(
+      `/personalization/recommendations${qs}`
+    );
+  }
+
+  async reviewAdaptationRecommendation(
+    recommendationId: string,
+    action: 'approve' | 'dismiss'
+  ): Promise<AdaptationReviewItem> {
+    return await this.request<AdaptationReviewItem>(
+      `/personalization/recommendations/${recommendationId}/review`,
+      { method: 'POST', body: JSON.stringify({ action }) }
+    );
   }
 
   // --------------------------------------------------------------------------
@@ -712,6 +827,24 @@ class ApiClient {
 
   async getOrgDepartments(): Promise<any[]> {
     return await this.request<any[]>('/organizations/manage/departments');
+  }
+
+  async getOrgDatasets(): Promise<any[]> {
+    return await this.request<any[]>('/organizations/manage/datasets');
+  }
+
+  async getOrgDatasetRecords(
+    datasetId: string,
+    params: { record_type?: string; page?: number; page_size?: number } = {}
+  ): Promise<any> {
+    const query = new URLSearchParams();
+    if (params.record_type) query.set('record_type', params.record_type);
+    if (params.page) query.set('page', String(params.page));
+    if (params.page_size) query.set('page_size', String(params.page_size));
+    const qs = query.toString();
+    return await this.request(
+      `/organizations/manage/datasets/${datasetId}/records${qs ? `?${qs}` : ''}`
+    );
   }
 
   async createOrgDepartment(payload: { name: string; status?: string }): Promise<any> {
@@ -777,6 +910,47 @@ class ApiClient {
     });
   }
 
+  async updateOrgWorker(
+    userId: string,
+    payload: {
+      full_name?: string;
+      email?: string;
+      badge_number?: string;
+      department_id?: string;
+      status?: string;
+    }
+  ): Promise<any> {
+    return await this.request(`/organizations/manage/workers/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateOrgSupervisor(
+    userId: string,
+    payload: {
+      full_name?: string;
+      email?: string;
+      department_id?: string;
+      status?: string;
+    }
+  ): Promise<any> {
+    return await this.request(`/organizations/manage/supervisors/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateAdminUser(
+    userId: string,
+    payload: { full_name?: string; email?: string }
+  ): Promise<any> {
+    return await this.request(`/admin/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async getOrgWorkflows(): Promise<any[]> {
     return await this.request<any[]>('/organizations/manage/workflows');
   }
@@ -784,6 +958,13 @@ class ApiClient {
   async createOrgWorkflow(payload: any): Promise<any> {
     return await this.request('/organizations/manage/workflows', {
       method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateOrgWorkflow(workflowId: string, payload: any): Promise<any> {
+    return await this.request(`/organizations/manage/workflows/${workflowId}`, {
+      method: 'PUT',
       body: JSON.stringify(payload),
     });
   }
@@ -802,6 +983,22 @@ class ApiClient {
 
   async getOrgAudit(limit: number = 50): Promise<any[]> {
     return await this.request<any[]>(`/organizations/manage/audit?limit=${limit}`);
+  }
+
+  // Phase 10: accessibility preferences (PostgreSQL-authoritative)
+  async getAccessibilityPreferences(): Promise<Record<string, unknown>> {
+    return await this.request<Record<string, unknown>>(
+      '/accessibility/preferences'
+    );
+  }
+
+  async updateAccessibilityPreferences(
+    preferences: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return await this.request<Record<string, unknown>>(
+      '/accessibility/preferences',
+      { method: 'PUT', body: JSON.stringify({ preferences }) }
+    );
   }
 
   async getAuditLogs(limit: number = 50): Promise<any[]> {

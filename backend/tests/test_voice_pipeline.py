@@ -43,39 +43,21 @@ def test_voice_exact_and_multilingual_matches():
     assert cmd == "request_assistance"
     assert action == "request_assistance"
 
-    # 2. Spanish commands
-    cmd_es, act_es, _, _ = service.match_command("siguiente")
-    assert cmd_es == "next_step"
-    assert act_es == "next_step"
-
-    cmd_es2, act_es2, _, _ = service.match_command("confirmar")
-    assert cmd_es2 == "confirm_action"
-    assert act_es2 == "confirm_action"
-
-    cmd_es3, act_es3, _, is_crit = service.match_command("detener")
-    assert cmd_es3 == "emergency_stop"
-    assert is_crit is True
-
-    # 3. German commands
-    cmd_de, act_de, _, _ = service.match_command("weiter")
-    assert cmd_de == "next_step"
-
-    cmd_de2, act_de2, _, _ = service.match_command("bestätigen")
-    assert cmd_de2 == "confirm_action"
-
-    # 4. Hindi commands
+    # 2. Hindi commands (devanagari and transliteration) — en/hi only product
     cmd_hi, act_hi, _, _ = service.match_command("अगला")
     assert cmd_hi == "next_step"
 
     cmd_hi2, act_hi2, _, _ = service.match_command("पुष्टि")
     assert cmd_hi2 == "confirm_action"
 
-    # 5. Tamil commands
-    cmd_ta, act_ta, _, _ = service.match_command("அடுத்து")
-    assert cmd_ta == "next_step"
+    cmd_hi3, act_hi3, _, _ = service.match_command("agla step")
+    assert cmd_hi3 == "next_step"
+    assert act_hi3 == "next_step"
 
-    cmd_ta2, act_ta2, _, _ = service.match_command("உறுதி")
-    assert cmd_ta2 == "confirm_action"
+    # 3. Unsupported languages are handled correctly: unmatched, not guessed
+    assert service.match_command("siguiente")[0] is None  # Spanish
+    assert service.match_command("weiter")[0] is None  # German
+    assert service.match_command("அடுத்து")[0] is None  # Tamil
 
 
 # =====================================================================
@@ -273,150 +255,238 @@ def test_voice_hinglish_vocabulary_matches():
 
 
 # =====================================================================
-# /voice/transcribe Endpoint Hardening Tests (Step 1 & 8)
+# /voice/stream WebSocket Protocol Hardening Tests
+# (model-independent: fake recognizer + fake auth service)
 # =====================================================================
 
-def test_voice_transcribe_unauthenticated_rejected():
-    """POST /api/v1/voice/transcribe must reject unauthenticated requests with HTTP 401."""
+import json
+import uuid
+
+from app.dependencies import get_auth_service
+from routes.voice import get_vosk_registry, get_voice_service
+from services.auth_service import AuthService
+from services.base import UnauthorizedError
+from services.vosk_stt_service import VoskModelUnavailableError
+
+
+class _FakeAuthService:
+    """Accepts exactly one fixed token; everything else is unauthorized."""
+
+    def __init__(self, user):
+        self._user = user
+
+    def verify_token(self, token: str):
+        if token == "valid-test-token":
+            return self._user
+        raise UnauthorizedError("Invalid authentication token: test")
+
+
+class _FakeSession:
+    """Deterministic in-memory recognizer stand-in (no Vosk dependency)."""
+
+    def __init__(self, model=None, language="en", sample_rate=16000):
+        self.language = language
+        self.sample_rate = sample_rate
+        self.fed = 0
+        self.final_count = 0
+
+    def feed(self, pcm_chunk: bytes):
+        if len(pcm_chunk) % 2 != 0:
+            raise ValueError(
+                "Malformed audio frame: 16-bit PCM frames must have an even byte length"
+            )
+        self.fed += len(pcm_chunk)
+        if self.fed >= 32000 and self.final_count == 0:
+            self.final_count += 1
+            return {
+                "type": "final",
+                "transcript": "next step",
+                "confidence": 0.99,
+                "word_count": 2,
+                "utterance": 1,
+                "processing_time_ms": 1.0,
+            }
+        return None
+
+    def finish(self):
+        return None
+
+
+class _FakeRegistry:
+    """Registry stand-in with isolated per-connection sessions."""
+
+    def __init__(self, sessions=None):
+        self.sessions = sessions if sessions is not None else []
+        self.created = []
+
+    def new_session(self, language, sample_rate=16000):
+        session = _FakeSession(language=language, sample_rate=sample_rate)
+        self.created.append(session)
+        return session
+
+
+class _MissingModelRegistry:
+    def health(self):
+        from models.voice import STTHealthStatus
+
+        return STTHealthStatus(
+            model_status="ERROR",
+            model_name="vosk-test-missing",
+            supported_languages=["en", "hi"],
+        )
+
+    def new_session(self, language, sample_rate=16000):
+        raise VoskModelUnavailableError("Vosk model directory missing: /nonexistent")
+
+
+def _mock_ws_user():
+    from models.auth import AuthenticatedUserContext
+
+    return AuthenticatedUserContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        email="voice.ws@amap.org",
+        full_name="Voice WS Worker",
+        status="active",
+        roles=["worker"],
+        permissions=[],
+        worker_profile_id=uuid.uuid4(),
+    )
+
+
+def _ws_overrides(user=None, registry=None):
+    user = user or _mock_ws_user()
+    app.dependency_overrides[get_auth_service] = lambda: _FakeAuthService(user)
+    if registry is not None:
+        app.dependency_overrides[get_vosk_registry] = lambda: registry
+
+
+def test_voice_stream_ws_unauthenticated_rejected():
+    """WS /voice/stream without a token: error event + close, never recognition."""
     client = TestClient(app)
     app.dependency_overrides.clear()
+    with client.websocket_connect("/api/v1/voice/stream") as ws:
+        message = ws.receive_json()
+        assert message["type"] == "error"
+        assert message["code"] == "unauthenticated"
+        with pytest.raises(Exception):
+            ws.receive_json()  # server closes the socket
 
-    resp = client.post(
-        "/api/v1/voice/transcribe",
-        files={"audio": ("audio.webm", b"fake-audio-content-under-100", "audio/webm")},
-    )
-    assert resp.status_code in (401, 403)
 
-
-def test_voice_transcribe_payload_too_large_rejected():
-    """POST /api/v1/voice/transcribe must reject payloads > 10MB with HTTP 413."""
+def test_voice_stream_ws_invalid_token_rejected():
+    """WS /voice/stream with a garbage token: error event + close."""
     client = TestClient(app)
-    mock_user = AuthenticatedUserContext(
-        user_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        email="worker@amap.org",
-        full_name="Worker",
-        status="active",
-        roles=["worker"],
-        permissions=[],
-        worker_profile_id=uuid.uuid4(),
-    )
-    app.dependency_overrides[get_current_user] = lambda: mock_user
+    app.dependency_overrides.clear()
+    with client.websocket_connect("/api/v1/voice/stream?token=not-a-real-jwt") as ws:
+        message = ws.receive_json()
+        assert message["type"] == "error"
+        assert message["code"] == "unauthenticated"
+        with pytest.raises(Exception):
+            ws.receive_json()
 
+
+def test_voice_stream_ws_unsupported_language_rejected():
+    """Authenticated WS with language=fr must receive an error and close."""
+    client = TestClient(app)
+    _ws_overrides()
     try:
-        # Create a payload exceeding 10 MB (10 * 1024 * 1024 + 1 bytes)
-        oversized_data = b"0" * (10 * 1024 * 1024 + 1024)
-        resp = client.post(
-            "/api/v1/voice/transcribe",
-            files={"audio": ("large_audio.webm", oversized_data, "audio/webm")},
-        )
-        assert resp.status_code == 413
-        err_msg = resp.json().get("error") or resp.json().get("detail") or ""
-        assert "10MB" in err_msg
+        with client.websocket_connect("/api/v1/voice/stream?token=valid-test-token&language=fr") as ws:
+            message = ws.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "unsupported_language"
     finally:
         app.dependency_overrides.clear()
 
 
-def test_voice_transcribe_unsupported_language_rejected():
-    """POST /api/v1/voice/transcribe with language=de must return HTTP 422."""
+def test_voice_stream_ws_model_unavailable_never_executes():
+    """Missing Vosk model: error event + close 4503, and no command can execute."""
     client = TestClient(app)
-    mock_user = AuthenticatedUserContext(
-        user_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        email="worker@amap.org",
-        full_name="Worker",
-        status="active",
-        roles=["worker"],
-        permissions=[],
-        worker_profile_id=uuid.uuid4(),
-    )
-    app.dependency_overrides[get_current_user] = lambda: mock_user
-
+    _ws_overrides(registry=_MissingModelRegistry())
     try:
-        resp = client.post(
-            "/api/v1/voice/transcribe",
-            data={"language": "de"},
-            files={"audio": ("audio.webm", b"x" * 200, "audio/webm")},
-        )
-        assert resp.status_code == 422
-        err_msg = resp.json().get("error") or resp.json().get("detail") or ""
-        assert "Only English (en) and Hindi (hi) are supported" in err_msg
+        with client.websocket_connect("/api/v1/voice/stream?token=valid-test-token&language=en") as ws:
+            message = ws.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "model_unavailable"
     finally:
         app.dependency_overrides.clear()
 
 
-def test_voice_transcribe_empty_or_small_audio_rejected():
-    """POST /api/v1/voice/transcribe with < 100 bytes must return HTTP 422."""
+def test_voice_stream_ws_malformed_audio_frame_rejected():
+    """Odd-length (non-16-bit) frame -> unsupported_audio_format error, no command."""
     client = TestClient(app)
-    mock_user = AuthenticatedUserContext(
-        user_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        email="worker@amap.org",
-        full_name="Worker",
-        status="active",
-        roles=["worker"],
-        permissions=[],
-        worker_profile_id=uuid.uuid4(),
-    )
-    app.dependency_overrides[get_current_user] = lambda: mock_user
-
+    registry = _FakeRegistry()
+    _ws_overrides(registry=registry)
     try:
-        resp = client.post(
-            "/api/v1/voice/transcribe",
-            files={"audio": ("audio.webm", b"too small", "audio/webm")},
-        )
-        assert resp.status_code == 422
-        err_msg = resp.json().get("error") or resp.json().get("detail") or ""
-        assert "too small" in err_msg.lower()
+        with client.websocket_connect("/api/v1/voice/stream?token=valid-test-token&language=en") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_bytes(b"\x01\x02\x03")  # odd byte length
+            message = ws.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "unsupported_audio_format"
+            # well-formed silence afterwards is still fine (connection stays up)
+            ws.send_bytes(b"\x00\x00" * 160)
     finally:
         app.dependency_overrides.clear()
 
 
-def test_voice_transcribe_mocked_success():
-    """POST /api/v1/voice/transcribe returns valid TranscriptionResult contract."""
+def test_voice_stream_ws_oversized_frame_rejected():
+    """Frame larger than MAX_FRAME_BYTES -> unsupported_audio_format error."""
     client = TestClient(app)
-    mock_user = AuthenticatedUserContext(
-        user_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        email="worker@amap.org",
-        full_name="Worker",
-        status="active",
-        roles=["worker"],
-        permissions=[],
-        worker_profile_id=uuid.uuid4(),
-    )
-    app.dependency_overrides[get_current_user] = lambda: mock_user
-
-    from models.voice import TranscriptionResult
-    from routes.voice import get_speech_to_text_service
-
-    class MockSTTService:
-        def validate_language(self, lang):
-            return "en"
-
-        def transcribe(self, audio_bytes, language=None, filename=None):
-            return TranscriptionResult(
-                transcript="next step",
-                detected_language="en",
-                confidence=0.92,
-                processing_time_ms=120.5,
-                success=True,
-            )
-
-    app.dependency_overrides[get_speech_to_text_service] = lambda: MockSTTService()
-
+    registry = _FakeRegistry()
+    _ws_overrides(registry=registry)
     try:
-        resp = client.post(
-            "/api/v1/voice/transcribe",
-            data={"language": "en"},
-            files={"audio": ("audio.webm", b"x" * 500, "audio/webm")},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["success"] is True
-        assert data["transcript"] == "next step"
-        assert data["detected_language"] == "en"
-        assert data["confidence"] == 0.92
-        assert data["processing_time_ms"] == 120.5
+        with client.websocket_connect("/api/v1/voice/stream?token=valid-test-token&language=en") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_bytes(b"\x00\x00" * 20000)  # 40000 bytes > 32000 limit
+            message = ws.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "unsupported_audio_format"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_voice_stream_ws_control_messages():
+    """Ping is answered; malformed text control frames get bad_message errors."""
+    client = TestClient(app)
+    registry = _FakeRegistry()
+    _ws_overrides(registry=registry)
+    try:
+        with client.websocket_connect("/api/v1/voice/stream?token=valid-test-token&language=en") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_text(json.dumps({"type": "ping"}))
+            assert ws.receive_json() == {"type": "pong"}
+            ws.send_text("this is not json")
+            message = ws.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "bad_message"
+            ws.send_text(json.dumps({"type": "bogus-control"}))
+            message = ws.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "bad_message"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_voice_stream_ws_final_event_carries_command_exactly_once():
+    """One endpointer final -> exactly one command payload on the final message."""
+    client = TestClient(app)
+    registry = _FakeRegistry()
+    _ws_overrides(registry=registry)
+    try:
+        with client.websocket_connect("/api/v1/voice/stream?token=valid-test-token&language=en") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            # Feed enough well-formed audio for the fake session to endpoint.
+            ws.send_bytes(b"\x00\x00" * 16000)
+            final = ws.receive_json()
+            assert final["type"] == "final"
+            assert final["transcript"] == "next step"
+            command = final["command"]
+            assert command is not None
+            assert command["action_mapping"] == "next_step"
+            assert command["validation_status"] == "valid"
+            # Partials NEVER carry a command payload.
+            ws.send_bytes(b"\x00\x00" * 16000)
+            ws.send_text(json.dumps({"type": "ping"}))
+            assert ws.receive_json() == {"type": "pong"}
     finally:
         app.dependency_overrides.clear()

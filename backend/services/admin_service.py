@@ -20,13 +20,15 @@ from models.interaction import (
 )
 from models.organization import OrganizationRead, OrganizationUpdate
 from models.user import UserRead
+from psycopg import errors
+
 from repositories.audit_events import AuditEventsRepository
 from repositories.interaction_configurations import InteractionConfigurationsRepository
 from repositories.organizations import OrganizationsRepository
 from repositories.roles import RolesRepository
 from repositories.user_roles import UserRolesRepository
 from repositories.users import UsersRepository
-from services.base import NotFoundError, ValidationError
+from services.base import ConflictError, NotFoundError, ValidationError
 
 
 class AdminService:
@@ -102,6 +104,7 @@ class AdminService:
             name=payload.name,
             description=payload.description,
             status=payload.status.value if hasattr(payload.status, "value") else str(payload.status),
+            config_data=payload.config_data or {},
         )
 
         # Emit audit record
@@ -119,7 +122,7 @@ class AdminService:
             organization_id=created["organization_id"],
             name=created["name"],
             description=created.get("description"),
-            config_data=payload.config_data or {},
+            config_data=created.get("config_data") or {},
             status=created.get("status", "active"),
             created_at=created["created_at"],
             updated_at=created["updated_at"],
@@ -143,11 +146,17 @@ class AdminService:
             payload.status.value if hasattr(payload.status, "value") else str(payload.status)
         ) if payload.status is not None else existing.get("status", "active")
 
+        new_config_data = (
+            payload.config_data if payload.config_data is not None
+            else existing.get("config_data") or {}
+        )
+
         updated = self.configs_repo.update(
             interaction_configuration_id=config_id,
             name=new_name,
             description=new_desc,
             status=new_status,
+            config_data=new_config_data,
         )
 
         self.audit_repo.create(
@@ -156,7 +165,7 @@ class AdminService:
             event_type="interaction_config.updated",
             resource_type="interaction_configuration",
             resource_id=config_id,
-            event_data={"name": new_name, "status": new_status},
+            event_data={"name": new_name, "status": new_status, "config_data": new_config_data},
         )
 
         return InteractionConfigurationRead(
@@ -164,7 +173,7 @@ class AdminService:
             organization_id=updated["organization_id"],
             name=updated["name"],
             description=updated.get("description"),
-            config_data=payload.config_data or existing.get("config_data") or {},
+            config_data=updated.get("config_data") or {},
             status=updated.get("status", "active"),
             created_at=updated["created_at"],
             updated_at=updated["updated_at"],
@@ -220,11 +229,21 @@ class AdminService:
             payload.status.value if hasattr(payload.status, "value") else str(payload.status)
         ) if payload.status is not None else existing["status"]
 
-        updated = self.orgs_repo.update(
-            organization_id=organization_id,
-            name=new_name,
-            status=new_status,
-        )
+        if new_name != existing["name"]:
+            clash = self.orgs_repo.get_by_name(new_name)
+            if clash and clash["id"] != organization_id:
+                raise ConflictError(f"An organization named '{new_name}' already exists.")
+
+        try:
+            updated = self.orgs_repo.update(
+                organization_id=organization_id,
+                name=new_name,
+                status=new_status,
+            )
+        except errors.UniqueViolation:
+            raise ConflictError(f"An organization named '{new_name}' already exists.")
+        if not updated:
+            raise NotFoundError("Organization not found.")
 
         self.audit_repo.create(
             organization_id=organization_id,
@@ -243,7 +262,7 @@ class AdminService:
 
     def list_organization_users(self, organization_id: UUID) -> List[UserRead]:
         """List all users within the organization."""
-        users = self.users_repo.list_by_organization_id(organization_id)
+        users = self.users_repo.list_by_organization(organization_id)
         return [UserRead.model_validate(u) for u in users]
 
     def update_user_status(
@@ -267,6 +286,54 @@ class AdminService:
             resource_type="user",
             resource_id=user_id,
             event_data={"previous_status": user["status"], "new_status": new_status, "reason": reason},
+        )
+        return UserRead.model_validate(updated)
+
+    def update_user_details(
+        self,
+        user_id: UUID,
+        organization_id: UUID,
+        full_name: Optional[str],
+        email: Optional[str],
+        actor_id: UUID,
+    ) -> UserRead:
+        """Update a user's identity details (full name / email) within the organization."""
+        if full_name is None and email is None:
+            raise ValidationError("No changes supplied; provide full_name and/or email.")
+
+        user = self.users_repo.get_by_id(user_id)
+        if not user or user["organization_id"] != organization_id:
+            raise NotFoundError("User not found in this organization.")
+
+        new_email: Optional[str] = None
+        if email is not None:
+            new_email = email.strip().lower()
+            existing = self.users_repo.get_by_email(organization_id, new_email)
+            if existing and str(existing["id"]) != str(user_id):
+                raise ConflictError(
+                    f"A user with email '{new_email}' already exists in this organization."
+                )
+
+        updated = self.users_repo.update_details(
+            user_id=user_id, full_name=full_name, email=new_email
+        )
+        if not updated:
+            raise NotFoundError("User not found in this organization.")
+
+        audit_data: Dict[str, Any] = {}
+        if full_name is not None:
+            audit_data["previous_full_name"] = user["full_name"]
+            audit_data["new_full_name"] = full_name
+        if new_email is not None:
+            audit_data["previous_email"] = user["email"]
+            audit_data["new_email"] = new_email
+        self.audit_repo.create(
+            organization_id=organization_id,
+            actor_user_id=actor_id,
+            event_type="user.details_updated",
+            resource_type="user",
+            resource_id=user_id,
+            event_data=audit_data,
         )
         return UserRead.model_validate(updated)
 
@@ -350,6 +417,7 @@ class AdminService:
             filtered = [r for r in filtered if r.get("actor_user_id") == actor_user_id]
         if resource_type:
             filtered = [r for r in filtered if r.get("resource_type") == resource_type]
+        filtered = filtered[: max(1, limit)]
 
         return [
             AuditEventRead(

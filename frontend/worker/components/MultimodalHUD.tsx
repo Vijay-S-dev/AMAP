@@ -14,15 +14,15 @@ import { MediaPipeHandTracker, CameraLifecycleState } from '@/worker/components/
 import { useAccessibility, InteractionModality } from '@/shared/theme/AccessibilityContext';
 import { t } from '@/shared/i18n/languages';
 import { api } from '@/shared/api/client';
-import { useVoiceRecorder, VoiceRecorderState, TranscriptionResult } from '@/shared/hooks/useVoiceRecorder';
+import { useVoiceStream, VoiceStreamState, VoiceFinalEvent } from '@/shared/hooks/useVoiceStream';
 import { MultimodalFusionResult, MultimodalInputItem } from '@/shared/types';
 
 export type MicLifecycleState =
   | 'MIC_IDLE'
   | 'MIC_REQUESTING_PERMISSION'
-  | 'MIC_READY'
+  | 'MIC_CONNECTING'
   | 'LISTENING'
-  | 'PROCESSING'
+  | 'SPEAKING'
   | 'MIC_ERROR'
   | 'MIC_STOPPED';
 
@@ -34,12 +34,33 @@ interface MultimodalHUDProps {
   ) => void;
   dwellTimeMs?: number;
   isEmergencyStopped?: boolean;
+  /** Active work session id (server-side) included in fusion payloads. */
+  workSessionId?: string | null;
+  /**
+   * Raw tracked-hand frame tap for the real-time interaction engine
+   * (pointer/click/drag/scroll). Receives EVERY frame unthrottled.
+   */
+  onRawHandFrame?: (hands: { x: number; y: number; z?: number }[][], labels: string[]) => void;
+  /**
+   * Shared ref exposing the most recent ENGINE gesture perception (pose +
+   * pointer position) so the voice pipeline can fuse concurrent engine
+   * gestures (e.g. hand over element + "select").
+   */
+  externalGestureRef?: React.MutableRefObject<{
+    gesture: string;
+    confidence: number;
+    timestamp: number;
+    position?: { x: number; y: number };
+  } | null>;
 }
 
 export function MultimodalHUD({
   onActionTriggered,
   dwellTimeMs = 500,
   isEmergencyStopped = false,
+  workSessionId = null,
+  onRawHandFrame,
+  externalGestureRef,
 }: MultimodalHUDProps) {
   const { language, modality, setModality, announce, playAudioCue } = useAccessibility();
 
@@ -66,10 +87,12 @@ export function MultimodalHUD({
   const [lastExecutedAction, setLastExecutedAction] = useState<string | null>(null);
   const [lastTranscript, setLastTranscript] = useState<string>('');
   const [voiceLatencyMs, setVoiceLatencyMs] = useState<number>(0);
-  const recordingStartedAtRef = useRef<number>(0);
   const lastVoiceProcessedTimeRef = useRef<number>(0);
   const isVoiceProcessingRef = useRef<boolean>(false);
   const lastPerceivedGestureRef = useRef<{ gesture: string; confidence: number; timestamp: number } | null>(null);
+  const lastGestureFrameSentRef = useRef<number>(0);
+  const gestureFrameBusyRef = useRef<boolean>(false);
+  const gestureCustomDispatchRef = useRef<number>(0);
   const lastPerceivedVoiceRef = useRef<{ action: string; command: string; confidence: number; timestamp: number } | null>(null);
   const lastDispatchedExecutionRef = useRef<{ action: string; timestamp: number } | null>(null);
 
@@ -166,6 +189,74 @@ export function MultimodalHUD({
     [announce, onActionTriggered, playAudioCue]
   );
 
+  // Phase 12: stream tracked frames through the server gesture pipeline
+  // (dwell accumulation + worker-specific custom gesture recognition + audit).
+  const handleHandFrame = useCallback(
+    (hands: { x: number; y: number; z?: number }[][], labels: string[]) => {
+      if (!isGestureActive || hands.length === 0) return;
+      const now = Date.now();
+      if (now - lastGestureFrameSentRef.current < 120) return; // throttle upstream
+      if (gestureFrameBusyRef.current) return;
+      lastGestureFrameSentRef.current = now;
+      gestureFrameBusyRef.current = true;
+      const label = (labels[0] === 'Left' ? 'Left' : 'Right') as 'Left' | 'Right';
+      api
+        .processGestureFrame({
+          landmarks: hands[0],
+          handedness: label,
+          timestamp_ms: now,
+        })
+        .then((res) => {
+          if (res.is_triggered && res.is_custom && res.action_mapping) {
+            // Server recognized a worker-specific custom gesture: dispatch it
+            // through the same multimodal arbitration path as standard gestures.
+            if (now - gestureCustomDispatchRef.current < 1200) return;
+            gestureCustomDispatchRef.current = now;
+            lastPerceivedGestureRef.current = {
+              gesture: res.action_mapping,
+              confidence: res.confidence,
+              timestamp: now,
+            };
+            api
+              .processMultimodalIntent({
+                inputs: [
+                  {
+                    mode: 'gesture',
+                    raw_intent: res.action_mapping.toLowerCase(),
+                    confidence: res.confidence,
+                    timestamp_ms: now,
+                    context_data: {
+                      gesture: res.detected_gesture,
+                      custom_gesture_id: res.custom_gesture_id,
+                      source: 'server-custom-gesture',
+                    },
+                  },
+                ],
+                temporal_window_ms: 1500,
+                work_session_id: workSessionId || null,
+                client_context: { source: 'multimodal-hud', modality, language },
+              })
+              .then((fused) => processFusedMultimodalCandidate(fused, res.detected_gesture || undefined))
+              .catch((err: any) =>
+                setConflictWarning(
+                  `Custom gesture dispatch failed: ${err?.message || 'server error'}`
+                )
+              );
+          }
+        })
+        .catch((err: any) => {
+          // Surface pipeline errors — never fail silently.
+          setConflictWarning(
+            `Gesture pipeline error: ${err?.message || 'server unreachable'}`
+          );
+        })
+        .finally(() => {
+          gestureFrameBusyRef.current = false;
+        });
+    },
+    [isGestureActive, processFusedMultimodalCandidate]
+  );
+
   // One-Shot Confirmed Gesture Execution (Enforces Multimodal Fusion & Release Latch)
   const handleGestureConfirmed = async (gesture: string) => {
     if (!isGestureActive) return;
@@ -180,6 +271,11 @@ export function MultimodalHUD({
         raw_intent: gesture.toLowerCase(),
         confidence: conf,
         timestamp_ms: now,
+        context_data: {
+          gesture,
+          dwell_time_ms: dwellTimeMs,
+          source: 'hand-landmarker',
+        },
       },
     ];
 
@@ -200,6 +296,8 @@ export function MultimodalHUD({
       const fusedResult = await api.processMultimodalIntent({
         inputs,
         temporal_window_ms: 1500,
+        work_session_id: workSessionId || null,
+        client_context: { source: 'multimodal-hud', modality, language },
       });
       await processFusedMultimodalCandidate(fusedResult, gesture);
     } catch (err: any) {
@@ -207,46 +305,55 @@ export function MultimodalHUD({
     }
   };
 
-  const handleVoiceTranscript = useCallback(async (result: TranscriptionResult) => {
+  const handleVoiceFinal = useCallback(async (event: VoiceFinalEvent) => {
     // Emergency Stop Voice Lockout
     if (isEmergencyStopped) {
       return;
     }
 
     const now = Date.now();
-    // Debounce latch (~500ms) and in-flight processing guard
+    // Debounce latch (~500ms) and in-flight processing guard: one finalized
+    // utterance produces at most ONE command execution.
     if (now - lastVoiceProcessedTimeRef.current < 500 || isVoiceProcessingRef.current) {
       return;
     }
     lastVoiceProcessedTimeRef.current = now;
     isVoiceProcessingRef.current = true;
 
-    const transcript = result.transcript.trim();
+    const transcript = event.transcript.trim();
     setLastTranscript(transcript);
-    const startedAt = recordingStartedAtRef.current || performance.now();
+    const startedAt = performance.now();
     try {
-      const command = await api.processVoiceCommand({
-        raw_transcript: transcript,
-        confidence: result.confidence,
-        language: result.detected_language,
-      });
+      // The streaming endpoint already ran the existing AMAP VoiceService
+      // parser server-side (identical semantics to /voice/process-command);
+      // its result rides on the final event. No extra HTTP round trip.
+      const command = event.command;
       setVoiceLatencyMs(Math.round(performance.now() - startedAt));
 
       // Unmatched commands: give feedback to worker, do not proceed
-      if (!command.action_mapping) {
-        setActiveVoiceCommand(null);
-        setMicErrorMessage(command.message || 'Command not recognized. Please try again.');
-        announce(command.message || 'Voice command not recognized.');
+      if (!command || !command.action_mapping) {
+        setActiveVoiceCommand('standby');
+        const unmatchedMessage = command?.message || 'Command not recognized. Please try again.';
+        setMicErrorMessage(unmatchedMessage);
+        announce(unmatchedMessage);
         return;
       }
 
       const action = command.action_mapping;
       const displayCmd = command.matched_command || action;
       setActiveVoiceCommand(displayCmd);
+      // Intent confidence (backend fuzzy-match score) is what fusion must
+      // arbitrate on; raw STT confidence stays in context_data. Sending STT
+      // confidence here dropped valid commands (e.g. confirm_action) below
+      // the 0.40 fusion threshold and fused_action came back None.
+      const intentConfidence =
+        typeof command.confidence === 'number' && command.confidence > 0
+          ? command.confidence
+          : event.confidence;
       lastPerceivedVoiceRef.current = {
         action,
         command: displayCmd,
-        confidence: result.confidence,
+        confidence: intentConfidence,
         timestamp: now,
       };
 
@@ -254,29 +361,57 @@ export function MultimodalHUD({
         {
           mode: 'voice',
           raw_intent: action,
-          confidence: result.confidence,
+          confidence: intentConfidence,
           timestamp_ms: now,
+          context_data: {
+            language: event.detected_language,
+            stt_confidence: event.confidence,
+            matched_command: displayCmd,
+          },
         },
       ];
 
-      // Check for concurrent gesture in the 1500ms temporal window
-      if (
-        lastPerceivedGestureRef.current &&
-        now - lastPerceivedGestureRef.current.timestamp <= 1500
-      ) {
-        const rawGConf = lastPerceivedGestureRef.current.confidence;
+      // Check for concurrent gesture in the 1500ms temporal window.
+      // Both dwell-confirmed gestures and real-time engine gestures (pose
+      // under the virtual pointer) participate in cross-modal fusion.
+      const hudGesture = lastPerceivedGestureRef.current;
+      const engineGesture = externalGestureRef?.current || null;
+      const hudTs = hudGesture ? hudGesture.timestamp : 0;
+      const engTs = engineGesture ? engineGesture.timestamp : 0;
+      const recentGesture =
+        engTs >= hudTs ? engineGesture : hudGesture && now - hudGesture.timestamp <= 1500 ? hudGesture : null;
+
+      if (recentGesture && now - recentGesture.timestamp <= 1500) {
+        const rawGConf = recentGesture.confidence;
         const gConf = rawGConf > 1 ? Number((rawGConf / 100).toFixed(2)) : rawGConf;
+        const contextData: Record<string, unknown> = {
+          gesture: recentGesture.gesture,
+          dwell_time_ms: dwellTimeMs,
+          source: engTs >= hudTs ? 'gesture-engine' : 'hand-landmarker',
+        };
+        if (engineGesture && engTs >= hudTs && engineGesture.position) {
+          // Spatial binding: on-screen pointer position for the fused action.
+          contextData.spatial_x = engineGesture.position.x;
+          contextData.spatial_y = engineGesture.position.y;
+          contextData.coordinates = {
+            x: engineGesture.position.x,
+            y: engineGesture.position.y,
+          };
+        }
         inputs.push({
           mode: 'gesture',
-          raw_intent: lastPerceivedGestureRef.current.gesture.toLowerCase(),
+          raw_intent: recentGesture.gesture.toLowerCase(),
           confidence: gConf,
-          timestamp_ms: lastPerceivedGestureRef.current.timestamp,
+          timestamp_ms: recentGesture.timestamp,
+          context_data: contextData,
         });
       }
 
       const fusedResult = await api.processMultimodalIntent({
         inputs,
         temporal_window_ms: 1500,
+        work_session_id: workSessionId || null,
+        client_context: { source: 'multimodal-hud', modality, language },
       });
 
       // Combine confirmation requirements: fusion, voice service, and low_confidence
@@ -294,36 +429,49 @@ export function MultimodalHUD({
     } finally {
       isVoiceProcessingRef.current = false;
     }
-  }, [isEmergencyStopped, language, processFusedMultimodalCandidate]);
+  }, [isEmergencyStopped, language, processFusedMultimodalCandidate, externalGestureRef]);
 
   const handleRecorderError = useCallback((message: string) => {
     setMicErrorMessage(message);
   }, []);
 
-  const handleRecorderState = useCallback((next: VoiceRecorderState) => {
-    const stateMap: Record<VoiceRecorderState, MicLifecycleState> = {
+  const handleVoiceState = useCallback((next: VoiceStreamState) => {
+    const stateMap: Record<VoiceStreamState, MicLifecycleState> = {
       IDLE: 'MIC_STOPPED',
       REQUESTING_MIC: 'MIC_REQUESTING_PERMISSION',
-      READY: 'MIC_READY',
-      RECORDING: 'LISTENING',
-      PROCESSING: 'PROCESSING',
+      CONNECTING: 'MIC_CONNECTING',
+      LISTENING: 'LISTENING',
+      SPEAKING: 'SPEAKING',
+      FINALIZING: 'LISTENING',
+      EXECUTING: 'LISTENING',
+      READY: 'LISTENING',
       ERROR: 'MIC_ERROR',
     };
     setMicState(stateMap[next]);
-    if (next === 'READY') setMicErrorMessage('');
+    if (next === 'READY' || next === 'LISTENING') setMicErrorMessage('');
   }, []);
 
-  const recorder = useVoiceRecorder({
+  const voice = useVoiceStream({
     enabled: isVoiceActive && !isEmergencyStopped,
     language: sttLanguage,
-    onTranscript: handleVoiceTranscript,
+    onFinal: handleVoiceFinal,
     onError: handleRecorderError,
-    onStateChange: handleRecorderState,
+    onStateChange: handleVoiceState,
   });
+
+  // Hands-free streaming voice: opening the voice modality opens the
+  // microphone once; the server-side Vosk endpointer finalizes every
+  // utterance automatically. There is no stop-recording control.
+  useEffect(() => {
+    if (isVoiceActive && !isEmergencyStopped) {
+      void voice.activate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVoiceActive, isEmergencyStopped]);
 
   const handleRetryMic = () => {
     setMicErrorMessage('');
-    recorder.startRecording();
+    void voice.activate();
   };
 
   const handleModeSelect = (newModality: InteractionModality) => {
@@ -454,21 +602,28 @@ export function MultimodalHUD({
         </div>
       )}
 
-      {/* Main HUD Grid */}
+      {/* PRIMARY INTERACTION REGION: large live camera / gesture area.
+          Responsive height (clamp) — big enough to comfortably position the
+          hand, capped on small screens, and never wider than the page (no
+          horizontal scrolling). */}
       <div
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-          gap: '1rem',
+          width: '100%',
+          maxWidth: '1040px',
+          margin: '0 auto',
         }}
       >
-        {/* Real MediaPipe Hand Tracker with enabled hardware isolation */}
-        <div>
-          <MediaPipeHandTracker
-            height="240px"
+        <MediaPipeHandTracker
+          height="clamp(360px, 58vh, 720px)"
             showLabels={false}
             requiredDwellMs={dwellTimeMs}
             enabled={isGestureActive}
+            onHandFrame={(hands, labels) => {
+              // Real-time engine first (unthrottled), then the server
+              // gesture pipeline (internally throttled to ~8 fps).
+              onRawHandFrame?.(hands, labels);
+              handleHandFrame(hands, labels);
+            }}
             onCameraStateChange={handleCameraStateChange}
             onHandPresenceChange={(present) => {
               setHasHandInView(present);
@@ -480,9 +635,17 @@ export function MultimodalHUD({
             }}
             onGestureConfirmed={handleGestureConfirmed}
           />
-        </div>
+      </div>
 
-        {/* Live Input Channels & Telemetry Status Cards (Section 11: Text + Icons) */}
+      {/* Secondary: Input Channels & Telemetry Status Cards (Section 11) */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          gap: '1rem',
+          marginTop: '1rem',
+        }}
+      >
         <div
           className="glass-card"
           style={{
@@ -589,12 +752,12 @@ export function MultimodalHUD({
                 </div>
                 <div>
                   {isVoiceActive ? (
-                    micState === 'LISTENING' || micState === 'MIC_READY' ? (
+                    micState === 'LISTENING' ? (
                       <span className="badge badge-emerald">● {t('mic_status_ready', language)}</span>
-                    ) : micState === 'MIC_REQUESTING_PERMISSION' ? (
+                    ) : micState === 'SPEAKING' ? (
+                      <span className="badge badge-cyan">🗣️ {t('voice_stream_speaking', language)}</span>
+                    ) : micState === 'MIC_REQUESTING_PERMISSION' || micState === 'MIC_CONNECTING' ? (
                       <span className="badge badge-amber">⏳ {t('mic_status_requesting', language)}</span>
-                    ) : micState === 'PROCESSING' ? (
-                      <span className="badge badge-cyan">⏳ Processing</span>
                     ) : (
                       <span className="badge badge-rose">❌ {t('mic_status_error', language)}</span>
                     )
@@ -606,34 +769,54 @@ export function MultimodalHUD({
 
               {isVoiceActive && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (recorder.state === 'RECORDING') {
-                        recorder.stopRecording();
-                      } else {
-                        recordingStartedAtRef.current = performance.now();
-                        recorder.startRecording();
-                      }
+                  {/* Hands-free streaming: live partial caption (display-only
+                      feedback; partials NEVER execute commands). */}
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    aria-label={t('voice_stream_listening', language)}
+                    style={{
+                      minHeight: '52px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.5rem',
+                      padding: '0.5rem 0.85rem',
+                      borderRadius: '14px',
+                      fontWeight: 700,
+                      fontSize: '0.95rem',
+                      background:
+                        voice.state === 'SPEAKING' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 255, 255, 0.03)',
+                      border: `1px solid ${voice.state === 'SPEAKING' ? 'var(--org-emerald)' : 'var(--surface-glass-border)'}`,
+                      color: voice.state === 'SPEAKING' ? 'var(--org-emerald)' : 'var(--text-secondary)',
+                      textAlign: 'center',
                     }}
-                    disabled={isEmergencyStopped || recorder.state === 'PROCESSING' || micState === 'MIC_REQUESTING_PERMISSION'}
-                    className={`btn ${recorder.state === 'RECORDING' ? 'btn-danger' : 'btn-primary'}`}
-                    style={{ minHeight: '52px', fontWeight: 800, fontSize: '1rem' }}
+                  >
+                    {isEmergencyStopped ? (
+                      '🛑 Microphone locked during emergency stop'
+                    ) : voice.state === 'SPEAKING' ? (
+                      <span>
+                        🗣️ <strong>“{voice.partialText}”</strong>
+                      </span>
+                    ) : voice.state === 'REQUESTING_MIC' || voice.state === 'CONNECTING' ? (
+                      `🎙️ ${t('mic_status_requesting', language)}`
+                    ) : voice.state === 'ERROR' ? (
+                      `⚠️ ${t('mic_status_error', language)}`
+                    ) : (
+                      `🎙️ ${t('voice_stream_listening', language)}`
+                    )}
+                  </div>
+                  <span
+                    style={{
+                      fontSize: '0.75rem',
+                      color: isEmergencyStopped ? 'var(--accent-rose)' : 'var(--text-muted)',
+                      textAlign: 'center',
+                      fontWeight: isEmergencyStopped ? 700 : 400,
+                    }}
                   >
                     {isEmergencyStopped
-                      ? '🛑 Mic Locked'
-                      : recorder.state === 'RECORDING'
-                      ? '⏹️ Stop Recording'
-                      : recorder.state === 'PROCESSING'
-                      ? '⏳ Transcribing…'
-                      : '🎙️ Speak'}
-                  </button>
-                  <span style={{ fontSize: '0.75rem', color: isEmergencyStopped ? 'var(--accent-rose)' : 'var(--text-muted)', textAlign: 'center', fontWeight: isEmergencyStopped ? 700 : 400 }}>
-                    {isEmergencyStopped
                       ? 'Microphone locked during emergency stop. Clear lockout to resume.'
-                      : recorder.state === 'RECORDING'
-                      ? 'Click to stop immediately, or pause speech for 1.5s'
-                      : 'Push to talk — click to speak, click again to stop'}
+                      : t('voice_stream_hint', language)}
                   </span>
                   {lastTranscript && (
                     <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>

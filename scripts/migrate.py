@@ -1,7 +1,7 @@
 """
 Automated Database Migration Runner for AMAP.
 
-Applies migrations 001 through 040 in deterministic numerical sequence
+Applies all migrations in database/migrations in deterministic numerical sequence
 inside transactional blocks with validation.
 """
 

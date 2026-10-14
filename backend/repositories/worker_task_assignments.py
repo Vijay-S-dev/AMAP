@@ -193,3 +193,32 @@ class WorkerTaskAssignmentsRepository:
                 connection.commit()
 
                 return deleted
+
+    def list_recent_by_organization(
+        self,
+        organization_id: UUID,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return the most recent task assignments for an organization (live activity feed)."""
+        with get_db_connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        wta.id,
+                        wta.task_id,
+                        t.name AS task_name,
+                        wta.status,
+                        wta.assigned_at,
+                        wta.started_at,
+                        wta.completed_at,
+                        wta.updated_at
+                    FROM worker_task_assignments wta
+                    JOIN tasks t ON t.id = wta.task_id
+                    WHERE t.organization_id = %s
+                    ORDER BY wta.updated_at DESC
+                    LIMIT %s
+                    """,
+                    (organization_id, limit),
+                )
+                return cursor.fetchall()

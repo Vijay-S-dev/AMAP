@@ -5,7 +5,7 @@ Provides database access operations for the users table.
 Business logic does not belong in this module.
 """
 
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
 from psycopg.rows import dict_row
@@ -70,6 +70,55 @@ class UsersRepository:
                 )
                 return list(cursor.fetchall())
 
+    def list_organization_supervisors(
+        self,
+        organization_id: UUID,
+    ) -> list[dict[str, Any]]:
+        """
+        Return all supervisor-role users in an organization with their primary
+        department and a real count of active workers sharing that department.
+        """
+        with get_db_connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        u.id,
+                        u.email,
+                        u.full_name,
+                        u.status,
+                        u.created_at,
+                        d.id AS department_id,
+                        d.name AS department_name,
+                        (
+                            SELECT COUNT(DISTINCT wp.id)
+                            FROM worker_profiles wp
+                            JOIN users wu ON wu.id = wp.user_id
+                            JOIN user_roles wur ON wur.user_id = wu.id
+                            JOIN roles wr ON wr.id = wur.role_id AND wr.name = 'worker'
+                            JOIN user_departments wud ON wud.user_id = wu.id
+                            WHERE wud.department_id = ud.department_id
+                              AND wu.status = 'active'
+                              AND wp.status = 'active'
+                        ) AS assigned_workers_count
+                    FROM users u
+                    JOIN user_roles ur ON ur.user_id = u.id
+                    JOIN roles r ON r.id = ur.role_id AND r.name = 'supervisor'
+                    LEFT JOIN LATERAL (
+                        SELECT department_id
+                        FROM user_departments
+                        WHERE user_id = u.id
+                        ORDER BY created_at
+                        LIMIT 1
+                    ) ud ON TRUE
+                    LEFT JOIN departments d ON d.id = ud.department_id
+                    WHERE u.organization_id = %s
+                    ORDER BY u.full_name
+                    """,
+                    (organization_id,),
+                )
+                return list(cursor.fetchall())
+
     def create(
         self,
         organization_id: UUID,
@@ -103,6 +152,63 @@ class UsersRepository:
                 connection.commit()
 
                 return user
+
+    def update_status(
+        self,
+        user_id: UUID,
+        status: str,
+    ) -> dict[str, Any] | None:
+        """Update a user's account status and return the updated row (or None)."""
+        with get_db_connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET
+                        status = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    RETURNING id, organization_id, email, full_name, password_hash,
+                              status, created_at, updated_at
+                    """,
+                    (status, user_id),
+                )
+                updated = cursor.fetchone()
+                connection.commit()
+                return updated
+
+    def update_details(
+        self,
+        user_id: UUID,
+        full_name: Optional[str] = None,
+        email: Optional[str] = None,
+    ) -> dict[str, Any] | None:
+        """Update a user's identity details (full name / email) and return the updated row."""
+        updates: list[str] = []
+        params: list[Any] = []
+        if full_name is not None:
+            updates.append("full_name = %s")
+            params.append(full_name)
+        if email is not None:
+            updates.append("email = %s")
+            params.append(email)
+        if not updates:
+            return self.get_by_id(user_id)
+        with get_db_connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE users
+                    SET {", ".join(updates)}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    RETURNING id, organization_id, email, full_name, password_hash,
+                              status, created_at, updated_at
+                    """,
+                    (*params, user_id),
+                )
+                updated = cursor.fetchone()
+                connection.commit()
+                return updated
 
     def delete_by_id(self, user_id: UUID) -> bool:
         """Delete a user by ID and return whether it was deleted."""

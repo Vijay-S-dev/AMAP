@@ -13,6 +13,18 @@ CREATE TABLE IF NOT EXISTS organizations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'archived')),
+    organization_type TEXT NOT NULL DEFAULT 'industrial_manufacturing',
+    industry TEXT NOT NULL DEFAULT 'Automotive & Aerospace Assembly',
+    location TEXT NOT NULL DEFAULT 'Main Operations Facility',
+    contact_email TEXT,
+    default_language TEXT NOT NULL DEFAULT 'en',
+    supported_languages JSONB NOT NULL DEFAULT '["en", "hi"]'::jsonb,
+    accessibility_defaults JSONB NOT NULL DEFAULT jsonb_build_object(
+        'default_dwell_time_ms', 500,
+        'high_contrast_default', FALSE,
+        'min_target_size_px', 48,
+        'voice_confirmation_default', FALSE
+    ),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -36,7 +48,7 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT NOT NULL,
     full_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'archived')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'archived', 'suspended')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_users_org_email UNIQUE (organization_id, email)
@@ -372,7 +384,7 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
     worker_profile_id UUID NOT NULL REFERENCES worker_profiles(id) ON DELETE RESTRICT,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'ended')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'completed', 'cancelled')),
     started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ended_at TIMESTAMPTZ
 );
@@ -499,3 +511,44 @@ ALTER TABLE interaction_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE assistance_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_events ENABLE ROW LEVEL SECURITY;
+
+-- 41. Custom Gestures (PostgreSQL-authoritative; replaces SQLite fallback)
+CREATE TABLE IF NOT EXISTS custom_gestures (
+    id UUID PRIMARY KEY,
+    worker_id UUID NOT NULL REFERENCES worker_profiles(id) ON DELETE CASCADE,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    gesture_name TEXT NOT NULL,
+    intent TEXT NOT NULL,
+    action_mapping TEXT NOT NULL,
+    handedness TEXT NOT NULL,
+    sample_count INTEGER NOT NULL CHECK (sample_count >= 1),
+    stability_score DOUBLE PRECISION NOT NULL,
+    feature_template TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'replaced', 'deleted')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_custom_gestures_worker_id ON custom_gestures(worker_id);
+CREATE INDEX IF NOT EXISTS idx_custom_gestures_organization_id ON custom_gestures(organization_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_custom_gestures_active_worker_intent
+    ON custom_gestures(worker_id, intent) WHERE status = 'active';
+
+-- 42. Worker Readiness (persisted onboarding lifecycle state)
+CREATE TABLE IF NOT EXISTS worker_readiness (
+    worker_profile_id UUID PRIMARY KEY REFERENCES worker_profiles(id) ON DELETE CASCADE,
+    is_fresher BOOLEAN NOT NULL DEFAULT TRUE,
+    onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE,
+    readiness_status TEXT NOT NULL DEFAULT 'incomplete' CHECK (readiness_status IN ('ready', 'incomplete')),
+    interaction_mode TEXT NOT NULL DEFAULT 'multimodal',
+    gesture_ready BOOLEAN NOT NULL DEFAULT FALSE,
+    voice_ready BOOLEAN NOT NULL DEFAULT FALSE,
+    multimodal_ready BOOLEAN NOT NULL DEFAULT FALSE,
+    task_training_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    overall_ready BOOLEAN NOT NULL DEFAULT FALSE,
+    completed_stages JSONB NOT NULL DEFAULT '[]'::jsonb,
+    active_preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_worker_readiness_status ON worker_readiness(readiness_status);

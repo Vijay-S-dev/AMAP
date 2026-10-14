@@ -28,3 +28,9 @@ __pycache__/
 .pytest_cache/
 backend/.pytest_cache/
 .mypy_cache/
+
+# Local SQLite state (removed from VCS; PostgreSQL is authoritative)
+backend/data/
+
+# Local speech-to-text model cache (prefetched at setup, never committed)
+backend/.vosk_cache/

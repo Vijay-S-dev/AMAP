@@ -138,7 +138,7 @@ export default function OrganizationPage() {
               Plant Operations & Fleet Management
             </h1>
             <p style={{ color: 'var(--text-secondary)', marginTop: '0.25rem', fontSize: '0.95rem' }}>
-              Accessible Multimodal Assembly Operations • Real-time Task Dispatch & Operator Triage
+              Hybrid Control Interface Operations • Real-time Task Dispatch & Operator Triage
             </p>
           </div>
 

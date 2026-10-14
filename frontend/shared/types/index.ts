@@ -35,11 +35,25 @@ export interface WorkflowStep {
   stepNumber: number;
   title: string;
   instructionText: string;
+  isSafetyCritical?: boolean;
   expectedDurationSeconds?: number;
   spatialTargetId?: string;
   requiredModality?: InteractionMode;
   imageUrl?: string;
   completed?: boolean;
+}
+
+/** A database-backed evidence record linked to a task (task_evidence join). */
+export interface TaskEvidenceRecord {
+  id: string;
+  dataset_name?: string | null;
+  record_type: string;
+  title: string;
+  source_ref?: string | null;
+  payload: Record<string, any>;
+  occurred_at?: string | null;
+  related_record_id?: string | null;
+  relevance?: string | null;
 }
 
 export interface TaskDetails {
@@ -51,6 +65,12 @@ export interface TaskDetails {
   totalSteps: number;
   currentStepIndex: number;
   steps: WorkflowStep[];
+  /** Linked evidence records (dataset_records via task_evidence). */
+  evidence?: TaskEvidenceRecord[];
+  evidence_count?: number;
+  /** Decision capture for investigation tasks (tasks.decision_prompt/options). */
+  decision_prompt?: string | null;
+  decision_options?: string[];
 }
 
 export interface MultimodalInputItem {
@@ -111,6 +131,36 @@ export interface AdaptationRecommendation {
   confidence: number;
   reason: string;
   autoApplicable: boolean;
+}
+
+export interface PermissionMatrixEntry {
+  permission: { id: string; name: string; description?: string | null };
+  roles: Record<string, boolean>;
+}
+
+export interface PermissionMatrix {
+  organization_id: string;
+  roles: string[];
+  permissions: PermissionMatrixEntry[];
+}
+
+export interface AdaptationReviewItem {
+  id: string;
+  organization_id: string;
+  worker_profile_id: string;
+  worker_name?: string | null;
+  recommendation_type: string;
+  current_value: unknown;
+  suggested_value: unknown;
+  confidence: number;
+  reason: string;
+  auto_applicable: boolean;
+  evidence_count: number;
+  status: 'pending' | 'approved' | 'dismissed';
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface AssistanceTicket {

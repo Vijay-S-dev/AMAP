@@ -16,10 +16,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.dependencies import require_roles
+from app.dependencies import require_permissions, require_roles
 from models.admin import (
     UserRoleAssignPayload,
     UserStatusUpdatePayload,
+    UserDetailUpdatePayload,
 )
 from models.audit import AuditEventRead
 from models.auth import AuthenticatedUserContext
@@ -31,7 +32,7 @@ from models.interaction import (
 from models.organization import OrganizationRead, OrganizationUpdate
 from models.user import UserRead
 from services.admin_service import AdminService
-from services.base import NotFoundError, ValidationError
+from services.base import ConflictError, NotFoundError, ValidationError
 
 router = APIRouter(prefix="/admin", tags=["Admin & System Configuration"])
 
@@ -64,6 +65,7 @@ def list_interaction_configs(
     response_model=InteractionConfigurationRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create interaction configuration",
+dependencies=[Depends(require_permissions("admin:config"))],
 )
 def create_interaction_config(
     payload: InteractionConfigurationCreate,
@@ -101,6 +103,7 @@ def get_interaction_config(
     response_model=InteractionConfigurationRead,
     status_code=status.HTTP_200_OK,
     summary="Update interaction configuration",
+dependencies=[Depends(require_permissions("admin:config"))],
 )
 def update_interaction_config(
     config_id: UUID,
@@ -124,6 +127,7 @@ def update_interaction_config(
     "/configs/{config_id}",
     status_code=status.HTTP_200_OK,
     summary="Delete interaction configuration",
+dependencies=[Depends(require_permissions("admin:config"))],
 )
 def delete_interaction_config(
     config_id: UUID,
@@ -183,6 +187,8 @@ def update_current_organization(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 # =====================================================================
@@ -226,6 +232,35 @@ def update_user_status(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.put(
+    "/users/{user_id}",
+    response_model=UserRead,
+    status_code=status.HTTP_200_OK,
+    summary="Update user identity details",
+)
+def update_user_details(
+    user_id: UUID,
+    payload: UserDetailUpdatePayload,
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    service: AdminService = Depends(get_admin_service),
+) -> UserRead:
+    """Update a user's full name and/or email (organization-unique) and record an audit log."""
+    try:
+        return service.update_user_details(
+            user_id=user_id,
+            organization_id=admin_user.organization_id,
+            full_name=payload.full_name,
+            email=payload.email,
+            actor_id=admin_user.user_id,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.post(

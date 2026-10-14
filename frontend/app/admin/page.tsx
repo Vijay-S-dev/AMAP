@@ -10,6 +10,7 @@ import React, { useState } from 'react';
 import {
   AdaptationReviewPanel,
   AuditLogTimeline,
+  DatasetManagementPanel,
   DepartmentManagementPanel,
   EnterpriseWorkflowManager,
   InteractionPresetEditor,
@@ -21,7 +22,7 @@ import {
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'departments' | 'supervisors' | 'workers' | 'workflows' | 'presets' | 'permissions' | 'adaptations' | 'audit'
+    'overview' | 'departments' | 'supervisors' | 'workers' | 'datasets' | 'workflows' | 'presets' | 'permissions' | 'adaptations' | 'audit'
   >('overview');
 
   return (
@@ -77,6 +78,15 @@ export default function AdminPage() {
             </button>
             <button
               type="button"
+              className={`btn ${activeTab === 'datasets' ? 'btn-primary' : 'btn-secondary'}`}
+              style={activeTab === 'datasets' ? { background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)' } : {}}
+              onClick={() => setActiveTab('datasets')}
+            >
+              🗄️ Datasets
+            </button>
+
+            <button
+              type="button"
               className={`btn ${activeTab === 'workflows' ? 'btn-primary' : 'btn-secondary'}`}
               style={activeTab === 'workflows' ? { background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)' } : {}}
               onClick={() => setActiveTab('workflows')}
@@ -124,6 +134,7 @@ export default function AdminPage() {
       {activeTab === 'departments' && <DepartmentManagementPanel />}
       {activeTab === 'supervisors' && <SupervisorManagementPanel />}
       {activeTab === 'workers' && <WorkerManagementPanel />}
+      {activeTab === 'datasets' && <DatasetManagementPanel />}
       {activeTab === 'workflows' && <EnterpriseWorkflowManager />}
       {activeTab === 'presets' && <InteractionPresetEditor />}
       {activeTab === 'permissions' && <RolePermissionsMatrix />}

@@ -31,7 +31,7 @@ class OrganizationProfileRead(AMAPBaseModel):
     contact_email: Optional[str] = None
     status: str
     default_language: str = "en"
-    supported_languages: List[str] = Field(default_factory=lambda: ["en", "es", "ta", "hi", "de"])
+    supported_languages: List[str] = Field(default_factory=lambda: ["en", "hi"])
     accessibility_defaults: Dict[str, Any] = Field(
         default_factory=lambda: {
             "default_dwell_time_ms": 500,
@@ -107,9 +107,17 @@ class SupervisorInvitePayload(StrictInputModel):
     full_name: str = Field(..., min_length=1, max_length=255)
     department_id: Optional[UUID] = None
     notes: Optional[str] = Field(None, max_length=500)
+    temporary_password: Optional[str] = Field(
+        None,
+        min_length=8,
+        max_length=128,
+        description="Initial credential for the invited supervisor; generated if omitted. Never returned in responses.",
+    )
 
 
 class SupervisorUpdatePayload(StrictInputModel):
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    email: Optional[str] = Field(None, min_length=3, max_length=255)
     department_id: Optional[UUID] = None
     status: Optional[str] = None  # active | suspended
 
@@ -129,6 +137,7 @@ class EnterpriseWorkerItem(AMAPBaseModel):
     department_name: Optional[str] = "Unassigned"
     supervisor_name: Optional[str] = "Unassigned"
     status: str  # INVITED | ONBOARDING | READY | WORKING | PAUSED | ASSISTANCE_REQUESTED | OFFLINE | DEACTIVATED
+    account_status: str = "active"  # users.status: active | suspended | archived
     interaction_mode: str = "multimodal"
     training_completed: bool = False
     current_task_name: Optional[str] = None
@@ -141,6 +150,21 @@ class WorkerInvitePayload(StrictInputModel):
     badge_number: Optional[str] = Field(None, max_length=50)
     department_id: Optional[UUID] = None
     preferred_modality: Optional[str] = "multimodal"
+    temporary_password: Optional[str] = Field(
+        None,
+        min_length=8,
+        max_length=128,
+        description="Initial credential for the invited worker; generated if omitted. Never returned in responses.",
+    )
+
+
+class WorkerUpdatePayload(StrictInputModel):
+    """Payload for editing an existing worker: identity, badge, department, account status."""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    email: Optional[str] = Field(None, min_length=3, max_length=255)
+    badge_number: Optional[str] = Field(None, max_length=50)
+    department_id: Optional[UUID] = None
+    status: Optional[str] = None  # users.status: active | suspended
 
 
 class WorkerAssignmentPayload(StrictInputModel):
@@ -211,6 +235,11 @@ class OrganizationDashboardKPIs(AMAPBaseModel):
     open_assistance_requests_count: int
     emergency_events_count: int
     current_line_utilization_percent: float
+    datasets_count: int = 0
+    workflow_definitions_count: int = 0
+    task_definitions_count: int = 0
+    completion_rate_percent: float = 0.0
+    recent_activity: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class OrganizationAnalyticsSummary(AMAPBaseModel):
@@ -240,3 +269,32 @@ class OrganizationAuditEventItem(AMAPBaseModel):
     resource_id: Optional[UUID] = None
     occurred_at: datetime
     event_data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DatasetItem(AMAPBaseModel):
+    """An organization-owned dataset with aggregate record statistics."""
+    id: UUID
+    organization_id: UUID
+    name: str
+    description: Optional[str] = None
+    domain: str
+    status: str
+    record_count: int = 0
+    record_types: List[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class DatasetRecordItem(AMAPBaseModel):
+    """A typed record inside an organization-owned dataset."""
+    id: UUID
+    dataset_id: UUID
+    organization_id: UUID
+    record_type: str
+    title: str
+    source_ref: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    occurred_at: Optional[datetime] = None
+    related_record_id: Optional[UUID] = None
+    created_at: datetime
+    updated_at: datetime

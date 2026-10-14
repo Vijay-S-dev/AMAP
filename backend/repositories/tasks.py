@@ -31,6 +31,8 @@ class TasksRepository:
                         name,
                         description,
                         status,
+                        decision_prompt,
+                        decision_options,
                         created_at,
                         updated_at
                     FROM tasks

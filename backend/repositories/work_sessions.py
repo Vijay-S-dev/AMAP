@@ -27,10 +27,12 @@ class WorkSessionsRepository:
                     """
                     SELECT
                         id,
+                        organization_id,
                         worker_profile_id,
                         status,
                         started_at,
                         ended_at,
+                        last_heartbeat_at,
                         created_at,
                         updated_at
                     FROM work_sessions
@@ -51,10 +53,12 @@ class WorkSessionsRepository:
                     """
                     SELECT
                         id,
+                        organization_id,
                         worker_profile_id,
                         status,
                         started_at,
                         ended_at,
+                        last_heartbeat_at,
                         created_at,
                         updated_at
                     FROM work_sessions
@@ -76,10 +80,12 @@ class WorkSessionsRepository:
                     """
                     SELECT
                         id,
+                        organization_id,
                         worker_profile_id,
                         status,
                         started_at,
                         ended_at,
+                        last_heartbeat_at,
                         created_at,
                         updated_at
                     FROM work_sessions
@@ -101,27 +107,42 @@ class WorkSessionsRepository:
                 cursor.execute(
                     """
                     INSERT INTO work_sessions (
+                        organization_id,
                         worker_profile_id,
                         status
                     )
-                    VALUES (%s, %s)
+                    SELECT
+                        u.organization_id,
+                        %s,
+                        %s
+                    FROM worker_profiles wp
+                    JOIN users u ON u.id = wp.user_id
+                    WHERE wp.id = %s
                     RETURNING
                         id,
+                        organization_id,
                         worker_profile_id,
                         status,
                         started_at,
                         ended_at,
+                        last_heartbeat_at,
                         created_at,
                         updated_at
                     """,
                     (
                         worker_profile_id,
                         status,
+                        worker_profile_id,
                     ),
                 )
 
                 work_session = cursor.fetchone()
                 connection.commit()
+
+                if work_session is None:
+                    raise ValueError(
+                        f"Cannot start work session: worker profile {worker_profile_id} does not exist."
+                    )
 
                 return work_session
 
@@ -142,10 +163,12 @@ class WorkSessionsRepository:
                     WHERE id = %s
                     RETURNING
                         id,
+                        organization_id,
                         worker_profile_id,
                         status,
                         started_at,
                         ended_at,
+                        last_heartbeat_at,
                         created_at,
                         updated_at
                     """,
@@ -178,10 +201,12 @@ class WorkSessionsRepository:
                     WHERE id = %s
                     RETURNING
                         id,
+                        organization_id,
                         worker_profile_id,
                         status,
                         started_at,
                         ended_at,
+                        last_heartbeat_at,
                         created_at,
                         updated_at
                     """,
@@ -215,3 +240,39 @@ class WorkSessionsRepository:
                 connection.commit()
 
                 return deleted
+
+    def touch_heartbeat(
+        self,
+        work_session_id: UUID,
+    ) -> dict[str, Any] | None:
+        """Refresh the liveness heartbeat of an active/paused work session.
+
+        Returns the updated session row, or None when the session does not
+        exist (callers treat that as worker offline / unknown session).
+        """
+        with get_db_connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    UPDATE work_sessions
+                    SET
+                        last_heartbeat_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                      AND status IN ('active', 'paused')
+                    RETURNING
+                        id,
+                        organization_id,
+                        worker_profile_id,
+                        status,
+                        started_at,
+                        ended_at,
+                        last_heartbeat_at,
+                        created_at,
+                        updated_at
+                    """,
+                    (work_session_id,),
+                )
+                session = cursor.fetchone()
+                connection.commit()
+                return session

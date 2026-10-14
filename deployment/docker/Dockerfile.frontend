@@ -8,14 +8,30 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 
 RUN apk add --no-cache libc6-compat
+# .npmrc carries legacy-peer-deps=true (expo peer graph) and package.json's
+# postinstall needs scripts/setup-mediapipe-assets.mjs to materialize the
+# MediaPipe assets during npm ci.
 COPY frontend/package.json frontend/package-lock.json ./
+COPY frontend/.npmrc ./
+COPY frontend/scripts/setup-mediapipe-assets.mjs ./scripts/
 RUN npm ci
 
 # Stage 2: Build Application
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+# NEXT_PUBLIC_API_BASE_URL is inlined at build time by Next.js.
+# The default matches docker-compose.yml (browser -> published backend port).
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+
 COPY --from=deps /app/node_modules ./node_modules
+# public/ (MediaPipe wasm + hand_landmarker.task) is materialized by the
+# postinstall hook during the deps-stage npm ci; it is NOT committed to
+# git, so it must be carried over from the deps stage. Without this the
+# runner-stage `COPY --from=builder /app/public` fails with
+# '"/app/public": not found' (docker build cannot COPY a missing dir).
+COPY --from=deps /app/public ./public
 COPY frontend ./
 
 ENV NEXT_TELEMETRY_DISABLED=1 \

@@ -23,14 +23,20 @@ from models.supervisor import (
 )
 from repositories.assistance_requests import AssistanceRequestsRepository
 from repositories.audit_events import AuditEventsRepository
+from repositories.execution_events import ExecutionEventsRepository
 from repositories.interaction_configurations import InteractionConfigurationsRepository
+from repositories.interaction_events import InteractionEventsRepository
+from repositories.task_results import TaskResultsRepository
+from repositories.task_workflows import TaskWorkflowsRepository
 from repositories.tasks import TasksRepository
 from repositories.users import UsersRepository
+from repositories.worker_readiness import WorkerReadinessRepository
 from repositories.work_sessions import WorkSessionsRepository
 from repositories.worker_personalizations import WorkerPersonalizationsRepository
 from repositories.worker_profiles import WorkerProfilesRepository
 from repositories.worker_task_assignments import WorkerTaskAssignmentsRepository
 from repositories.workflow_assignments import WorkflowAssignmentsRepository
+from repositories.workflow_step_executions import WorkflowStepExecutionsRepository
 from repositories.workflow_steps import WorkflowStepsRepository
 from repositories.workflows import WorkflowsRepository
 from services.base import ConflictError, NotFoundError, UnauthorizedError, ValidationError
@@ -53,6 +59,12 @@ class SupervisorService:
         audit_events_repo: Optional[AuditEventsRepository] = None,
         interaction_configs_repo: Optional[InteractionConfigurationsRepository] = None,
         worker_personalizations_repo: Optional[WorkerPersonalizationsRepository] = None,
+        task_workflows_repo: Optional[TaskWorkflowsRepository] = None,
+        step_executions_repo: Optional[WorkflowStepExecutionsRepository] = None,
+        worker_readiness_repo: Optional[WorkerReadinessRepository] = None,
+        task_results_repo: Optional[TaskResultsRepository] = None,
+        execution_events_repo: Optional[ExecutionEventsRepository] = None,
+        interaction_events_repo: Optional[InteractionEventsRepository] = None,
     ) -> None:
         self.users_repo = users_repo or UsersRepository()
         self.worker_profiles_repo = worker_profiles_repo or WorkerProfilesRepository()
@@ -66,6 +78,86 @@ class SupervisorService:
         self.audit_events_repo = audit_events_repo or AuditEventsRepository()
         self.interaction_configs_repo = interaction_configs_repo or InteractionConfigurationsRepository()
         self.worker_personalizations_repo = worker_personalizations_repo or WorkerPersonalizationsRepository()
+        self.task_workflows_repo = task_workflows_repo or TaskWorkflowsRepository()
+        self.step_executions_repo = step_executions_repo or WorkflowStepExecutionsRepository()
+        self.worker_readiness_repo = worker_readiness_repo or WorkerReadinessRepository()
+        self.task_results_repo = task_results_repo or TaskResultsRepository()
+        self.execution_events_repo = execution_events_repo or ExecutionEventsRepository()
+        self.interaction_events_repo = interaction_events_repo or InteractionEventsRepository()
+
+    # A session counts as "online" only while its liveness heartbeat is fresh.
+    # Without this, a stale session row keeps a worker falsely "WORKING"
+    # forever after they leave the workstation.
+    WORKER_ONLINE_WINDOW_SECONDS = 120
+
+    def _worker_workflow_progress(self, worker_profile_id: UUID, task_id: UUID) -> Optional[Dict[str, Any]]:
+        """Derive real workflow step progress for a worker's active task.
+
+        Chain: task -> task_workflows link -> workflow -> workflow_assignments
+        (worker) -> workflow_step_executions. Returns None when the task has no
+        linked workflow or no steps, so callers show honest empty values instead
+        of invented progress.
+        """
+        tw_links = self.task_workflows_repo.list_by_task_id(task_id)
+        if not tw_links:
+            return None
+        workflow_id = tw_links[0].get("workflow_id")
+        if not workflow_id:
+            return None
+
+        steps = self.workflow_steps_repo.list_by_workflow_id(workflow_id)
+        if not steps:
+            return None
+
+        wf_assignment = None
+        wf_candidates = [
+            wa for wa in self.workflow_assignments_repo.list_by_worker_profile_id(worker_profile_id)
+            if wa.get("workflow_id") == workflow_id
+        ]
+        active_candidates = [
+            wa for wa in wf_candidates
+            if wa.get("status") in ("assigned", "in_progress", "paused")
+        ]
+        if active_candidates:
+            # current cycle: prefer the one in progress
+            wf_assignment = next(
+                (wa for wa in active_candidates if wa.get("status") == "in_progress"),
+                active_candidates[0],
+            )
+        elif wf_candidates:
+            # fall back to the most recent cycle (e.g. completed assignments)
+            wf_assignment = sorted(
+                wf_candidates,
+                key=lambda wa: wa.get("created_at") or wa.get("assigned_at"),
+            )[-1]
+
+        completed_ids: set = set()
+        if wf_assignment:
+            executions = self.step_executions_repo.list_by_workflow_assignment_id(wf_assignment["id"])
+            completed_ids = {
+                e["workflow_step_id"] for e in executions if e.get("status") == "completed"
+            }
+
+        completed_count = sum(1 for s in steps if s["id"] in completed_ids)
+        current_step = None
+        current_number = None
+        for idx, step in enumerate(steps, 1):
+            if step["id"] not in completed_ids:
+                current_step = step
+                current_number = idx
+                break
+
+        return {
+            "workflow_id": workflow_id,
+            "workflow_assignment_id": wf_assignment["id"] if wf_assignment else None,
+            "steps": steps,
+            "completed_ids": completed_ids,
+            "completed_count": completed_count,
+            "total_steps": len(steps),
+            "progress_percent": round((completed_count / len(steps)) * 100.0, 1),
+            "current_step": current_step,
+            "current_step_number": current_number,
+        }
 
     def get_dashboard_summary(self, organization_id: UUID) -> SupervisorDashboardSummary:
         """
@@ -80,7 +172,9 @@ class SupervisorService:
         emergency_count = 0
 
         for w in workers:
-            if w.status != "OFFLINE":
+            # "Active" means genuinely online (fresh workstation heartbeat),
+            # not merely possessing a possibly-stale session row.
+            if w.is_online:
                 active_count += 1
             if w.status == "AVAILABLE":
                 available_count += 1
@@ -142,7 +236,13 @@ class SupervisorService:
 
             # 1. Check active work session
             sessions = self.work_sessions_repo.list_by_worker_profile_id(wp_id)
-            active_session = next((s for s in sessions if s.get("status") == "active"), None)
+            # A paused session is still the worker's live session (they are at
+            # the station); prefer a fully active one, else the paused one, so
+            # the supervisor dashboard reflects the PAUSED state.
+            active_session = next(
+                (s for s in sessions if s.get("status") == "active"), None
+            ) or next((s for s in sessions if s.get("status") == "paused"), None)
+            session_is_paused = bool(active_session) and active_session.get("status") == "paused"
 
             session_duration = 0
             if active_session and active_session.get("started_at"):
@@ -151,12 +251,43 @@ class SupervisorService:
                     started = started.replace(tzinfo=timezone.utc)
                 session_duration = int((datetime.now(timezone.utc) - started).total_seconds())
 
-            # 2. Check active task assignment
+            # 1b. Liveness: a session only counts as online while its
+            # heartbeat (refreshed by the worker workstation) is fresh.
+            # Grace period: a just-started session with no heartbeat yet
+            # counts as online until the first heartbeat arrives (or the
+            # window elapses).
+            heartbeat_at = None
+            is_online = False
+            if active_session:
+                heartbeat_at = active_session.get("last_heartbeat_at")
+                if heartbeat_at:
+                    hb = heartbeat_at
+                    if hb.tzinfo is None:
+                        hb = hb.replace(tzinfo=timezone.utc)
+                    age = (datetime.now(timezone.utc) - hb).total_seconds()
+                    is_online = 0 <= age <= self.WORKER_ONLINE_WINDOW_SECONDS
+                elif active_session.get("started_at"):
+                    started_at = active_session["started_at"]
+                    if started_at.tzinfo is None:
+                        started_at = started_at.replace(tzinfo=timezone.utc)
+                    age = (datetime.now(timezone.utc) - started_at).total_seconds()
+                    is_online = 0 <= age <= self.WORKER_ONLINE_WINDOW_SECONDS
+
+            # 2. Check active task assignment — prefer work actually in
+            # progress, otherwise the most recently created open assignment.
             assignments = self.worker_task_assignments_repo.list_by_worker_profile_id(wp_id)
-            active_assignment = next(
-                (a for a in assignments if a.get("status") in ("in_progress", "assigned", "paused")),
-                None,
+            active_candidates = sorted(
+                (
+                    a for a in assignments
+                    if a.get("status") in ("in_progress", "assigned", "paused")
+                ),
+                key=lambda a: a.get("created_at") or a.get("assigned_at"),
+                reverse=True,
             )
+            active_assignment = next(
+                (a for a in active_candidates if a.get("status") == "in_progress"),
+                None,
+            ) or (active_candidates[0] if active_candidates else None)
 
             current_task_id = None
             current_task_name = None
@@ -173,22 +304,19 @@ class SupervisorService:
                 if task:
                     current_task_name = task.get("name")
 
-                # Workflow and step tracking
-                wf_assigns = self.workflow_assignments_repo.list_by_worker_task_assignment_id(current_assignment_id) if hasattr(self.workflow_assignments_repo, "list_by_worker_task_assignment_id") else []
-                if wf_assigns:
-                    wf_assign = wf_assigns[0]
-                    wf_id = wf_assign.get("workflow_id")
-                    if wf_id:
-                        steps = self.workflow_steps_repo.list_by_workflow_id(wf_id)
-                        total_steps = len(steps)
-                        curr_step_id = wf_assign.get("current_step_id")
-                        for idx, step in enumerate(steps, 1):
-                            if step.get("id") == curr_step_id:
-                                current_step_num = idx
-                                current_step_title = step.get("title") or step.get("name")
-                                break
-                        if total_steps > 0 and current_step_num:
-                            progress_percent = round((current_step_num / total_steps) * 100.0, 1)
+                # Real workflow/step tracking from task_workflows ->
+                # workflow_assignments -> workflow_step_executions.
+                progress = self._worker_workflow_progress(wp_id, current_task_id)
+                if progress:
+                    total_steps = progress["total_steps"]
+                    progress_percent = progress["progress_percent"]
+                    current_step = progress["current_step"]
+                    if current_step is not None:
+                        current_step_title = current_step.get("name") or current_step.get("title")
+                        current_step_num = progress["current_step_number"]
+                    elif active_assignment.get("status") == "completed":
+                        current_step_title = None
+                        current_step_num = None
 
             # 3. Check assistance requests
             all_requests = self.assistance_requests_repo.list_by_worker_profile_id(wp_id)
@@ -201,12 +329,17 @@ class SupervisorService:
                 for r in open_requests
             )
 
-            # 4. Compute status
+            # 4. Compute status — assistance/emergency states are surfaced even
+            # when the worker went offline (supervisor must still see them).
             status = "OFFLINE"
             if is_emergency or has_open_assistance:
                 status = "ASSISTANCE_REQUESTED"
             elif active_session:
-                if active_assignment:
+                if not is_online:
+                    status = "OFFLINE"  # stale session row, worker not present
+                elif session_is_paused:
+                    status = "PAUSED"  # worker paused their session (open palm)
+                elif active_assignment:
                     status = "PAUSED" if active_assignment.get("status") == "paused" else "WORKING"
                 else:
                     status = "AVAILABLE"
@@ -215,12 +348,83 @@ class SupervisorService:
                 if recent_done:
                     status = "COMPLETED"
 
-            # 5. Extract interaction mode and readiness
+            # 4b. Real last-activity telemetry: the newest of session
+            # heartbeat, execution events, interaction events, assignment
+            # updates, and session start — never the immutable user row.
+            last_activity = None
+            last_action_description = None
+            candidates: List[datetime] = []
+            if heartbeat_at:
+                hb = heartbeat_at
+                if hb.tzinfo is None:
+                    hb = hb.replace(tzinfo=timezone.utc)
+                candidates.append(hb)
+                last_activity = hb
+            try:
+                exec_events = self.execution_events_repo.list_by_worker_profile_id(wp_id)
+                if exec_events:
+                    latest_exec = max(
+                        (e for e in exec_events if e.get("occurred_at")),
+                        key=lambda e: e["occurred_at"],
+                        default=None,
+                    )
+                    if latest_exec:
+                        occ = latest_exec["occurred_at"]
+                        if occ.tzinfo is None:
+                            occ = occ.replace(tzinfo=timezone.utc)
+                        candidates.append(occ)
+                        event_type = str(latest_exec.get("event_type") or "")
+                        action_name = (latest_exec.get("event_data") or {}).get("action_name")
+                        last_action_description = action_name or event_type or None
+            except Exception:
+                pass
+            try:
+                inter_events = self.interaction_events_repo.list_by_worker_profile_id(wp_id)
+                if inter_events:
+                    latest_inter = max(
+                        (e for e in inter_events if e.get("occurred_at")),
+                        key=lambda e: e["occurred_at"],
+                        default=None,
+                    )
+                    if latest_inter:
+                        occ = latest_inter["occurred_at"]
+                        if occ.tzinfo is None:
+                            occ = occ.replace(tzinfo=timezone.utc)
+                        candidates.append(occ)
+            except Exception:
+                pass
+            if active_session:
+                for key in ("updated_at", "started_at"):
+                    val = active_session.get(key)
+                    if val:
+                        v = val
+                        if v.tzinfo is None:
+                            v = v.replace(tzinfo=timezone.utc)
+                        candidates.append(v)
+            if active_assignment and active_assignment.get("updated_at"):
+                val = active_assignment["updated_at"]
+                if val.tzinfo is None:
+                    val = val.replace(tzinfo=timezone.utc)
+                candidates.append(val)
+            if candidates:
+                last_activity = max(candidates)
+
+            # 5. Interaction mode + readiness health — sourced from the
+            # worker_readiness table (onboarding validation), NOT hardcoded.
+            readiness = self.worker_readiness_repo.get(wp_id)
             personalization = self.worker_personalizations_repo.get_by_worker_profile_id(wp_id)
             interaction_mode = "multimodal"
-            if personalization:
+            if readiness and readiness.get("interaction_mode"):
+                interaction_mode = readiness["interaction_mode"]
+            elif personalization:
                 pref = personalization.get("preferences") or {}
                 interaction_mode = pref.get("preferred_modality", "multimodal")
+
+            interaction_health = {
+                "gesture_ready": bool(readiness and readiness.get("gesture_ready")),
+                "voice_ready": bool(readiness and readiness.get("voice_ready")),
+                "multimodal_ready": bool(readiness and readiness.get("multimodal_ready")),
+            }
 
             item = SupervisorWorkerItem(
                 worker_profile_id=wp_id,
@@ -236,16 +440,14 @@ class SupervisorService:
                 current_step_number=current_step_num,
                 total_steps=total_steps,
                 interaction_mode=interaction_mode,
-                interaction_health={
-                    "gesture_ready": True,
-                    "voice_ready": True,
-                    "multimodal_ready": True,
-                },
+                interaction_health=interaction_health,
                 active_session_id=active_session["id"] if active_session else None,
                 session_duration_seconds=session_duration,
                 has_open_assistance=has_open_assistance,
                 is_emergency_stop=is_emergency,
-                last_activity_at=user.get("updated_at") or user.get("created_at"),
+                is_online=is_online,
+                last_activity_at=last_activity,
+                last_action_description=last_action_description,
             )
             result.append(item)
 
@@ -274,33 +476,30 @@ class SupervisorService:
         if not base_item:
             raise NotFoundError(f"Worker {worker_profile_id} telemetry not found.")
 
-        # Step details if in task
+        # Step details derived from real workflow step executions
         step_details: List[Dict[str, Any]] = []
-        if base_item.current_assignment_id:
-            wf_assigns = self.workflow_assignments_repo.list_by_worker_task_assignment_id(base_item.current_assignment_id) if hasattr(self.workflow_assignments_repo, "list_by_worker_task_assignment_id") else []
-            if wf_assigns:
-                wf_id = wf_assigns[0].get("workflow_id")
-                curr_step_id = wf_assigns[0].get("current_step_id")
-                if wf_id:
-                    steps = self.workflow_steps_repo.list_by_workflow_id(wf_id)
-                    found_curr = False
-                    for idx, s in enumerate(steps, 1):
-                        s_id = s.get("id")
-                        is_curr = s_id == curr_step_id
-                        if is_curr:
-                            found_curr = True
-                            st = "in_progress"
-                        elif not found_curr:
-                            st = "completed"
-                        else:
-                            st = "pending"
-                        step_details.append({
-                            "step_number": idx,
-                            "title": s.get("title") or s.get("name") or f"Step {idx}",
-                            "description": s.get("description"),
-                            "status": st,
-                            "is_current": is_curr,
-                        })
+        if base_item.current_assignment_id and base_item.current_task_id:
+            progress = self._worker_workflow_progress(worker_profile_id, base_item.current_task_id)
+            if progress:
+                for idx, step in enumerate(progress["steps"], 1):
+                    is_done = step["id"] in progress["completed_ids"]
+                    is_current = (
+                        progress["current_step"] is not None
+                        and step["id"] == progress["current_step"]["id"]
+                    )
+                    if is_done:
+                        st = "completed"
+                    elif is_current:
+                        st = "in_progress"
+                    else:
+                        st = "pending"
+                    step_details.append({
+                        "step_number": idx,
+                        "title": step.get("name") or step.get("title") or f"Step {idx}",
+                        "description": step.get("description"),
+                        "status": st,
+                        "is_current": is_current,
+                    })
 
         # Recent assistance history
         raw_reqs = self.assistance_requests_repo.list_by_worker_profile_id(worker_profile_id)
@@ -316,16 +515,22 @@ class SupervisorService:
             for r in raw_reqs[-10:]
         ]
 
-        # Recent task assignments
+        # Recent task assignments (with recorded outcome for completed work)
         raw_assigns = self.worker_task_assignments_repo.list_by_worker_profile_id(worker_profile_id)
         recent_tasks = []
         for a in raw_assigns[-10:]:
             t = self.tasks_repo.get_by_id(a["task_id"])
+            outcome = None
+            if a.get("status") in ("completed", "cancelled"):
+                result = self.task_results_repo.get_by_worker_task_assignment_id(a["id"])
+                if result:
+                    outcome = result.get("outcome")
             recent_tasks.append({
                 "assignment_id": str(a["id"]),
                 "task_id": str(a["task_id"]),
-                "task_name": t.get("name") if t else "Unknown Task",
+                "task_name": t.get("name") if t else None,
                 "status": a.get("status"),
+                "outcome": outcome,
                 "assigned_at": str(a.get("assigned_at")),
                 "completed_at": str(a.get("completed_at")) if a.get("completed_at") else None,
             })
@@ -378,6 +583,10 @@ class SupervisorService:
         worker_user = self.users_repo.get_by_id(worker_profile["user_id"])
         if not worker_user or worker_user.get("organization_id") != organization_id:
             raise UnauthorizedError("Access denied: Worker belongs to another organization.")
+        if (worker_user.get("status") or "active") != "active":
+            raise ConflictError(
+                f"Worker account is '{worker_user.get('status')}' and cannot receive new assignments."
+            )
 
         # 3. Create task assignment
         assignment = self.worker_task_assignments_repo.create(

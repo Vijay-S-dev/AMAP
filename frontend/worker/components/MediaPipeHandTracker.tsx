@@ -14,6 +14,9 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { useAccessibility } from '@/shared/theme/AccessibilityContext';
+import { classifyHandPose } from '@/worker/lib/handPoses';
+import { computeContainTransform } from '@/worker/lib/cameraTransform';
+import { filterHandsByQuality } from '@/worker/lib/handQuality';
 import { t } from '@/shared/i18n/languages';
 
 // MediaPipe 21 3D Joint Connection Topology
@@ -65,116 +68,17 @@ export interface MultiHandResolution {
 }
 
 /**
- * Geometric Classification for an Individual Hand (Phase 4 Hardened)
- * Evaluates 21 3D landmarks for canonical AMAP gestures:
- * - THUMBS_UP (confirm_action)
- * - THUMBS_DOWN (cancel_action)
- * - FIST (emergency_stop)
- * - POINTING (orientation-robust next_step / point_focus)
- * - OPEN_PALM (pause_session)
- * - UNKNOWN (safely rejected)
+ * Geometric Classification for an Individual Hand.
+ * Delegates to the shared canonical classifier in worker/lib/handPoses.ts so
+ * the dwell pipeline and the real-time interaction engine classify poses
+ * identically. Kept as a named export for existing consumers/tests.
  */
 export function classifySingleHand(landmarks: Landmark3D[]): { gesture: string | null; confidence: number } {
-  if (!landmarks || landmarks.length < 21) {
+  const result = classifyHandPose(landmarks);
+  if (result.pose === 'NONE') {
     return { gesture: null, confidence: 0 };
   }
-
-  const wrist = landmarks[0];
-  const thumbIp = landmarks[3];
-  const thumbTip = landmarks[4];
-  const indexMcp = landmarks[5];
-  const indexPip = landmarks[6];
-  const indexTip = landmarks[8];
-  const middleMcp = landmarks[9];
-  const middlePip = landmarks[10];
-  const middleTip = landmarks[12];
-  const ringMcp = landmarks[13];
-  const ringPip = landmarks[14];
-  const ringTip = landmarks[16];
-  const pinkyMcp = landmarks[17];
-  const pinkyPip = landmarks[18];
-  const pinkyTip = landmarks[20];
-
-  const dist2d = (p1: Landmark3D, p2: Landmark3D) =>
-    Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
-
-  const dist3d = (p1: Landmark3D, p2: Landmark3D) => {
-    const dz = (p1.z || 0) - (p2.z || 0);
-    return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2 + dz * dz);
-  };
-
-  const palmSize = dist2d(wrist, middleMcp);
-  if (palmSize < 0.04) {
-    return { gesture: null, confidence: 0 };
-  }
-
-  // Robust Extension Metrics: supports both vertical extension and 3D radial extension
-  const isExtended = (tip: Landmark3D, pip: Landmark3D, mcp: Landmark3D): boolean => {
-    const verticalExt = tip.y < pip.y && tip.y < mcp.y;
-    const radialExt = dist3d(tip, wrist) > dist3d(pip, wrist) * 1.15 && dist3d(tip, mcp) > palmSize * 0.70;
-    return verticalExt || radialExt;
-  };
-
-  const isCurled = (tip: Landmark3D, mcp: Landmark3D): boolean => {
-    return dist3d(tip, mcp) < palmSize * 0.75;
-  };
-
-  const isIndexExtended = isExtended(indexTip, indexPip, indexMcp);
-  const isMiddleExtended = isExtended(middleTip, middlePip, middleMcp);
-  const isRingExtended = isExtended(ringTip, ringPip, ringMcp);
-  const isPinkyExtended = isExtended(pinkyTip, pinkyPip, pinkyMcp);
-
-  const isMiddleCurled = isCurled(middleTip, middleMcp);
-  const isRingCurled = isCurled(ringTip, ringMcp);
-  const isPinkyCurled = isCurled(pinkyTip, pinkyMcp);
-
-  // Thumb vertical directions
-  const isThumbUp = thumbTip.y < thumbIp.y && thumbTip.y < indexMcp.y;
-  const isThumbDown = thumbTip.y > thumbIp.y && thumbTip.y > wrist.y;
-
-  // 1. THUMBS UP: Thumb pointing up, other 4 fingers curled
-  if (isThumbUp && !isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
-    const extensionScore = Math.min(1.0, (indexPip.y - thumbTip.y) / (palmSize * 0.8));
-    const confidence = Math.max(0.78, Math.min(0.99, 0.78 + extensionScore * 0.21));
-    return { gesture: 'THUMBS_UP', confidence: parseFloat(confidence.toFixed(2)) };
-  }
-
-  // 2. THUMBS DOWN: Thumb pointing down, other 4 fingers curled (Phase 4 Hardened)
-  if (isThumbDown && !isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
-    const extensionScore = Math.min(1.0, (thumbTip.y - wrist.y) / (palmSize * 0.8));
-    const confidence = Math.max(0.78, Math.min(0.99, 0.78 + extensionScore * 0.21));
-    return { gesture: 'THUMBS_DOWN', confidence: parseFloat(confidence.toFixed(2)) };
-  }
-
-  // 3. FIST: All 4 fingers curled, thumb not pointing up or down
-  if (!isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended && !isThumbUp && !isThumbDown) {
-    const maxFingertipDist = Math.max(
-      dist3d(indexTip, indexMcp),
-      dist3d(middleTip, middleMcp),
-      dist3d(ringTip, ringMcp),
-      dist3d(pinkyTip, pinkyMcp)
-    );
-    if (maxFingertipDist < palmSize * 0.70) {
-      return { gesture: 'FIST', confidence: 0.92 };
-    }
-  }
-
-  // 4. POINTING (Orientation-Robust):
-  // Index finger extended (upwards, horizontal, or forward), while middle, ring, pinky are curled
-  if (isIndexExtended && isMiddleCurled && isRingCurled && isPinkyCurled && !isThumbUp && !isThumbDown) {
-    const pointDist = dist3d(indexTip, indexMcp);
-    const confidence = Math.max(0.78, Math.min(0.98, 0.78 + (pointDist / palmSize) * 0.2));
-    return { gesture: 'POINTING', confidence: parseFloat(confidence.toFixed(2)) };
-  }
-
-  // 5. OPEN PALM: All 4 fingers extended + spread
-  if (isIndexExtended && isMiddleExtended && isRingExtended && isPinkyExtended) {
-    const spread = dist3d(thumbTip, pinkyTip);
-    const confidence = Math.max(0.82, Math.min(0.99, 0.82 + (spread / (palmSize * 2)) * 0.17));
-    return { gesture: 'OPEN_PALM', confidence: parseFloat(confidence.toFixed(2)) };
-  }
-
-  return { gesture: 'UNKNOWN', confidence: 0.50 };
+  return { gesture: result.pose, confidence: result.confidence };
 }
 
 /**
@@ -256,9 +160,27 @@ export interface HandTrackerProps {
   showLabels?: boolean;
   requiredDwellMs?: number;
   onGestureConfirmed?: (gesture: string) => void;
+  onHandFrame?: (hands: Landmark3D[][], labels: string[]) => void;
   enabled?: boolean;
   onCameraStateChange?: (state: CameraLifecycleState, error?: string) => void;
+  /**
+   * Poses eligible for dwell-confirmed one-shot execution. Poses outside this
+   * set are still classified and displayed, but their actions are owned by the
+   * real-time interaction engine (pointer / pinch clicks / two-finger / swipes)
+   * which has its own state machine — double execution is prevented.
+   */
+  dwellGestures?: string[];
 }
+
+/**
+ * Default dwell-confirmed gesture set for the workstation: discrete workflow
+ * poses only. PINCH / TWO_FINGER / POINTING are engine-managed (clicks,
+ * right-click/scroll, pointer aiming).
+ */
+export const DEFAULT_DWELL_GESTURES = ['THUMBS_UP', 'THUMBS_DOWN', 'OPEN_PALM', 'FIST'];
+
+
+
 
 export function MediaPipeHandTracker({
   onGestureDetected,
@@ -269,8 +191,10 @@ export function MediaPipeHandTracker({
   showLabels = true,
   requiredDwellMs = 500,
   onGestureConfirmed,
+  onHandFrame,
   enabled = true,
   onCameraStateChange,
+  dwellGestures = DEFAULT_DWELL_GESTURES,
 }: HandTrackerProps) {
   let accessibilityContext: any = null;
   try {
@@ -297,8 +221,10 @@ export function MediaPipeHandTracker({
     onLandmarksDetected,
     onHandPresenceChange,
     onGestureConfirmed,
+    onHandFrame,
     onCameraStateChange,
     requiredDwellMs,
+    dwellGestures,
   });
 
   useEffect(() => {
@@ -307,12 +233,14 @@ export function MediaPipeHandTracker({
       onLandmarksDetected,
       onHandPresenceChange,
       onGestureConfirmed,
+      onHandFrame,
       onCameraStateChange,
       requiredDwellMs,
+      dwellGestures,
     };
   });
 
-  // Diagnostic State Machine
+  // Pipeline Status State Machine (drives the user-facing status overlay)
   const [pipelineStatus, setPipelineStatus] = useState<GesturePipelineStatus>('CAMERA_INITIALIZING');
   const [handCount, setHandCount] = useState<number>(0);
   const [activeGesture, setActiveGesture] = useState<string | null>(null);
@@ -335,6 +263,7 @@ export function MediaPipeHandTracker({
   const prevDwellProgressRef = useRef<number>(0);
   const prevPipelineStatusRef = useRef<GesturePipelineStatus>('CAMERA_INITIALIZING');
 
+
   // Draw Dual-Hand Skeletal Meshes on Canvas
   const drawAllHandsMesh = useCallback((
     ctx: CanvasRenderingContext2D,
@@ -349,14 +278,27 @@ export function MediaPipeHandTracker({
 
     if (!allHandsLandmarks || allHandsLandmarks.length === 0) return;
 
+    // The <video> is object-fit: CONTAIN (never cropped). Map landmark
+    // coordinates through the same letterbox transform so the skeleton
+    // overlay aligns exactly with the visible hand at any container size.
+    const videoEl = videoRef.current;
+    const { scale, offsetX, offsetY } = computeContainTransform(
+      videoEl?.videoWidth || 640,
+      videoEl?.videoHeight || 480,
+      canvasWidth,
+      canvasHeight
+    );
+    const toCanvasX = (nx: number) => offsetX + (1 - nx) * (videoEl?.videoWidth || 640) * scale; // mirrored
+    const toCanvasY = (ny: number) => offsetY + ny * (videoEl?.videoHeight || 480) * scale;
+
     allHandsLandmarks.forEach((landmarks, handIdx) => {
       if (!landmarks || landmarks.length < 21) return;
 
       // Compute bounding box around joints
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       landmarks.forEach((pt) => {
-        const px = (1 - pt.x) * canvasWidth; // Mirrored
-        const py = pt.y * canvasHeight;
+        const px = toCanvasX(pt.x);
+        const py = toCanvasY(pt.y);
         if (px < minX) minX = px;
         if (py < minY) minY = py;
         if (px > maxX) maxX = px;
@@ -398,10 +340,10 @@ export function MediaPipeHandTracker({
         const p2 = landmarks[endIdx];
         if (!p1 || !p2) return;
 
-        const x1 = (1 - p1.x) * canvasWidth;
-        const y1 = p1.y * canvasHeight;
-        const x2 = (1 - p2.x) * canvasWidth;
-        const y2 = p2.y * canvasHeight;
+        const x1 = toCanvasX(p1.x);
+        const y1 = toCanvasY(p1.y);
+        const x2 = toCanvasX(p2.x);
+        const y2 = toCanvasY(p2.y);
 
         ctx.beginPath();
         ctx.moveTo(x1, y1);
@@ -429,8 +371,8 @@ export function MediaPipeHandTracker({
 
       // 3. Draw 21 Joint Nodes
       landmarks.forEach((pt, idx) => {
-        const px = (1 - pt.x) * canvasWidth;
-        const py = pt.y * canvasHeight;
+        const px = toCanvasX(pt.x);
+        const py = toCanvasY(pt.y);
 
         ctx.beginPath();
         ctx.arc(px, py, idx === 4 || idx === 8 || idx === 12 || idx === 16 || idx === 20 ? 6 : 4, 0, 2 * Math.PI);
@@ -461,6 +403,10 @@ export function MediaPipeHandTracker({
     let animationFrameId: number;
     let lastTime = performance.now();
     let frameCount = 0;
+    // Inference resilience state: which delegate is live, and how many
+    // consecutive detectForVideo() calls have thrown (GPU context loss etc.).
+    let usingDelegate: 'GPU' | 'CPU' = 'GPU';
+    let detectErrorStreak = 0;
 
     // Hardware isolation: If disabled, ensure camera is stopped and never requested
     if (!enabled) {
@@ -482,23 +428,34 @@ export function MediaPipeHandTracker({
 
         // 1. Initialize WebAssembly Tasks Vision Resolver
         const vision = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+          '/mediapipe/wasm'
         );
 
         if (!isComponentMounted) return;
 
-        // 2. Initialize Dual-Hand Landmarker (numHands: 2)
-        handLandmarkerInstance = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: 2, // DETECT BOTH HANDS SIMULTANEOUSLY
-          minHandDetectionConfidence: 0.45,
-          minHandPresenceConfidence: 0.45,
-          minTrackingConfidence: 0.45,
-        });
+        // 2. Initialize Dual-Hand Landmarker (numHands: 2).
+        // GPU delegate first; fall back to the CPU delegate automatically when
+        // the GPU path is unavailable on this machine (driver/WebGL issues) so
+        // gesture tracking never silently dies on exotic GPU setups.
+        const createLandmarker = (delegate: 'GPU' | 'CPU') =>
+          HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: '/mediapipe/hand_landmarker.task',
+              delegate,
+            },
+            runningMode: 'VIDEO',
+            numHands: 2, // DETECT BOTH HANDS SIMULTANEOUSLY
+            minHandDetectionConfidence: 0.45,
+            minHandPresenceConfidence: 0.45,
+            minTrackingConfidence: 0.45,
+          });
+        try {
+          handLandmarkerInstance = await createLandmarker('GPU');
+        } catch (gpuErr) {
+          console.warn('[AMAP Camera] GPU delegate unavailable — retrying with CPU delegate:', gpuErr);
+          usingDelegate = 'CPU';
+          handLandmarkerInstance = await createLandmarker('CPU');
+        }
 
         if (!isComponentMounted) return;
 
@@ -507,8 +464,11 @@ export function MediaPipeHandTracker({
           try {
             cameraStream = await navigator.mediaDevices.getUserMedia({
               video: {
-                width: { ideal: 640 },
-                height: { ideal: 480 },
+                // Prefer a high-resolution 4:3 mode: more landmark detail for
+                // distant/small hands; the browser negotiates down (640x480)
+                // when the camera does not support it.
+                width: { ideal: 1280 },
+                height: { ideal: 960 },
                 facingMode: 'user',
               },
               audio: false,
@@ -548,13 +508,43 @@ export function MediaPipeHandTracker({
           if (videoRef.current && isComponentMounted && cameraStream) {
             videoRef.current.srcObject = cameraStream;
             try {
-              await videoRef.current.play();
+              // FIX (stuck 'Initializing Dual-Hand Camera...' / 0 FPS):
+              // video.play() can stay PENDING indefinitely (autoplay policy
+              // hold, track interruption). A bare `await` stalled init forever
+              // BEFORE the pipeline state advanced and BEFORE the
+              // requestAnimationFrame loop was ever scheduled — while the
+              // <video> kept painting camera frames. Race play() with a
+              // timeout and proceed: the frame loop already guards on
+              // video.readyState >= 2, so proceeding is always safe.
+              await Promise.race([
+                videoRef.current.play(),
+                new Promise<void>((resolve) =>
+                  window.setTimeout(() => {
+                    console.warn('[AMAP Camera] video.play() still pending after 2.5s — proceeding (frame loop guards on readyState)');
+                    resolve();
+                  }, 2500)
+                ),
+              ]);
             } catch (playErr) {
               console.warn('Video play interrupted or muted:', playErr);
             }
             setCameraState('CAMERA_ACTIVE');
             setPipelineStatus('SEARCHING_FOR_HAND');
             callbacksRef.current.onCameraStateChange?.('CAMERA_ACTIVE');
+          } else {
+            // FIX: this branch previously fell through SILENTLY (no else) and
+            // scheduled the frame loop anyway — with no video attached the
+            // loop could never detect anything. Distinguish a dead closure
+            // (StrictMode remount race: do nothing) from a genuinely missing
+            // video element (surface a real error).
+            if (!isComponentMounted) return;
+            console.error('[AMAP CAMERA] video element missing at attach time — aborting init');
+            const attachMsg = t('camera_unavailable', language);
+            setErrorMessage(attachMsg);
+            setCameraState('CAMERA_ERROR');
+            setPipelineStatus('ERROR');
+            callbacksRef.current.onCameraStateChange?.('CAMERA_ERROR', attachMsg);
+            return;
           }
         } else {
           const noSupportMsg = t('camera_unavailable', language);
@@ -588,18 +578,79 @@ export function MediaPipeHandTracker({
         const video = videoRef.current;
         const canvas = canvasRef.current;
 
-        if (video && canvas && handLandmarkerInstance && video.readyState >= 2) {
+        if (video && canvas && handLandmarkerInstance && video.readyState >= 2 && video.videoWidth > 0) {
+          // Keep the canvas backing store matched to the DISPLAYED size so the
+          // skeleton overlay is pixel-exact on the enlarged camera area (a
+          // fixed 640x480 buffer would be CSS-stretched and distorted).
+          if (
+            canvas.clientWidth > 0 &&
+            canvas.clientHeight > 0 &&
+            (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight)
+          ) {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+          }
           const ctx = canvas.getContext('2d');
           if (ctx) {
             let results: any = null;
             try {
               results = handLandmarkerInstance.detectForVideo(video, now);
-            } catch {
+              detectErrorStreak = 0;
+            } catch (detectErr) {
+              // Inference resilience: a GPU delegate can fail per-frame (lost
+              // WebGL context, driver hiccups). Instead of silently treating
+              // it as "no hand" forever, fall back to the CPU delegate after
+              // a sustained failure streak so tracking recovers on its own.
               results = null;
+              detectErrorStreak++;
+              if (detectErrorStreak === 20) {
+                console.error('[AMAP Camera] detectForVideo failing repeatedly:', detectErr);
+                if (usingDelegate === 'GPU' && isComponentMounted) {
+                  usingDelegate = 'CPU';
+                  detectErrorStreak = 0;
+                  void (async () => {
+                    try {
+                      handLandmarkerInstance?.close();
+                    } catch {}
+                    try {
+                      const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+                      handLandmarkerInstance = await HandLandmarker.createFromOptions(vision, {
+                        baseOptions: {
+                          modelAssetPath: '/mediapipe/hand_landmarker.task',
+                          delegate: 'CPU',
+                        },
+                        runningMode: 'VIDEO',
+                        numHands: 2,
+                        minHandDetectionConfidence: 0.45,
+                        minHandPresenceConfidence: 0.45,
+                        minTrackingConfidence: 0.45,
+                      });
+                      console.warn('[AMAP Camera] recovered: switched to CPU delegate after repeated detect failures');
+                    } catch (cpuErr) {
+                      console.error('[AMAP Camera] CPU fallback failed:', cpuErr);
+                    }
+                  })();
+                }
+              }
             }
 
-            const multiHands: Landmark3D[][] = results?.landmarks || [];
-            const multiHandLabels: string[] = results?.handednesses?.map((h: any) => h[0]?.categoryName) || [];
+            const rawHands: Landmark3D[][] = results?.landmarks || [];
+            // `handednesses` is the deprecated alias; prefer the modern
+            // `handedness` field when the installed tasks-vision provides it.
+            const rawLabels: string[] =
+              (results?.handedness ?? results?.handednesses)?.map((h: any) => h[0]?.categoryName) || [];
+
+            // =========================================================================
+            // HAND QUALITY GATE: drop partial / too-distant / low-visibility hands
+            // BEFORE any classification, so poorly visible frames can never
+            // produce gestures or drive the interaction engine.
+            // Exact rules (and the tasks-vision visibility caveat) live in
+            // worker/lib/handQuality.ts, where they are unit-tested.
+            // =========================================================================
+            const { hands: multiHands, labels: multiHandLabels } = filterHandsByQuality(
+              rawHands,
+              rawLabels
+            );
 
             // =========================================================================
             // STRICT LAYER 1: "IS THERE A HAND?" (NO HAND = 0 GESTURE, NO INTENT)
@@ -680,6 +731,7 @@ export function MediaPipeHandTracker({
               const cb = callbacksRef.current;
               if (cb.onHandPresenceChange) cb.onHandPresenceChange(true);
               if (cb.onLandmarksDetected) cb.onLandmarksDetected(multiHands[0]);
+              if (cb.onHandFrame) cb.onHandFrame(multiHands, multiHandLabels);
 
               // =========================================================================
               // STRICT LAYER 2: "WHAT ARE THE HANDS DOING?" (PHASE 4 HARDENED)
@@ -743,6 +795,20 @@ export function MediaPipeHandTracker({
                 safeSetConfidence(highestConfidence);
                 if (cb.onGestureDetected) cb.onGestureDetected(dominantGesture, highestConfidence);
 
+                // Engine-managed poses (pinch/two-finger/pointing) are owned
+                // by the real-time interaction engine: display them, but do
+                // NOT dwell-confirm them here (prevents double execution).
+                if (!(cb.dwellGestures || []).includes(dominantGesture)) {
+                  safeSetDwellProgress(0);
+                  stabilityBufferRef.current = [];
+                  dwellStartTimeRef.current = null;
+                  if (isActionExecutedRef.current) {
+                    isActionExecutedRef.current = false;
+                    currentConfirmedGestureRef.current = null;
+                  }
+                  neutralStartTimeRef.current = null;
+                  safeSetPipelineStatus('HAND_DETECTED');
+                } else {
                 // Check for Valid Gesture Transition (MUST IMPLEMENT #4):
                 // If transitioning from Gesture A to Gesture B, reset execution latch so Gesture B can fire
                 if (
@@ -801,6 +867,7 @@ export function MediaPipeHandTracker({
                       }
                     }
                   }
+                }
                 }
               }
             }
@@ -901,9 +968,12 @@ export function MediaPipeHandTracker({
           position: 'absolute',
           width: '100%',
           height: '100%',
-          objectFit: 'cover',
+          objectFit: 'contain', // Letterboxed: the whole camera frame (and
+          // hand) stays visible at any container size; the skeleton overlay
+          // uses the same contain transform so it aligns exactly.
           transform: 'scaleX(-1)', // Mirror user reflection
           opacity: 0.88,
+          background: '#05070d',
         }}
       />
 
@@ -956,7 +1026,7 @@ export function MediaPipeHandTracker({
         </div>
       )}
 
-      {/* Diagnostic Telemetry Overlay (§ 19, Strict Debug Mode) */}
+      {/* Live Gesture Status Overlay (§ 19) — production accessibility feedback */}
       <div
         style={{
           position: 'absolute',
@@ -984,6 +1054,8 @@ export function MediaPipeHandTracker({
             {activeGesture === 'POINTING' && '👉'}
             {activeGesture === 'OPEN_PALM' && '✋'}
             {activeGesture === 'FIST' && '✊'}
+            {activeGesture === 'PINCH' && '🤏'}
+            {activeGesture === 'TWO_FINGER' && '✌️'}
           </span>
           <strong style={{ color: handCount > 0 && activeGesture ? 'var(--worker-cyan)' : pipelineStatus === 'CONFLICT' ? 'var(--accent-amber)' : '#fff' }}>
             {pipelineStatus === 'SEARCHING_FOR_HAND' && 'Searching for Hand(s)...'}

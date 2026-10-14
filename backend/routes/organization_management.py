@@ -20,6 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.dependencies import require_roles
 from models.auth import AuthenticatedUserContext
 from models.enterprise_organization import (
+    DatasetItem,
+    DatasetRecordItem,
     DepartmentCreatePayload,
     DepartmentItem,
     DepartmentUpdatePayload,
@@ -36,8 +38,9 @@ from models.enterprise_organization import (
     WorkflowCreatePayload,
     WorkflowTemplate,
     WorkflowUpdatePayload,
+    WorkerUpdatePayload,
 )
-from services.base import NotFoundError, ValidationError
+from services.base import ConflictError, NotFoundError, ValidationError
 from services.organization_management_service import OrganizationManagementService
 
 router = APIRouter(prefix="/organizations/manage", tags=["Enterprise Organization Management"])
@@ -59,7 +62,7 @@ def get_org_management_service() -> OrganizationManagementService:
     summary="Get organization dashboard KPIs",
 )
 def get_organization_dashboard(
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> OrganizationDashboardKPIs:
     """Retrieve summarized real database metrics for the organization operational dashboard."""
@@ -77,7 +80,7 @@ def get_organization_dashboard(
     summary="Get organization profile and accessibility defaults",
 )
 def get_organization_profile(
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> OrganizationProfileRead:
     """Retrieve tenant profile and configured accessibility defaults."""
@@ -95,7 +98,7 @@ def get_organization_profile(
 )
 def update_organization_profile(
     payload: OrganizationProfileUpdate,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> OrganizationProfileRead:
     """Update organization settings and append immutable audit log."""
@@ -107,6 +110,10 @@ def update_organization_profile(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 # =====================================================================
@@ -120,7 +127,7 @@ def update_organization_profile(
     summary="List organization departments",
 )
 def list_departments(
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> List[DepartmentItem]:
     """List all departments belonging to the administrator's organization."""
@@ -135,7 +142,7 @@ def list_departments(
 )
 def create_department(
     payload: DepartmentCreatePayload,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> DepartmentItem:
     """Create a new department within the tenant boundary."""
@@ -145,6 +152,8 @@ def create_department(
             payload=payload,
             actor_id=admin_user.user_id,
         )
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -158,7 +167,7 @@ def create_department(
 def update_department(
     department_id: UUID,
     payload: DepartmentUpdatePayload,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> DepartmentItem:
     """Update department properties enforcing organization ownership."""
@@ -171,6 +180,10 @@ def update_department(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.delete(
@@ -181,7 +194,7 @@ def update_department(
 )
 def deactivate_department(
     department_id: UUID,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> Dict[str, Any]:
     """Deactivate department with organization isolation."""
@@ -206,7 +219,7 @@ def deactivate_department(
     summary="List organization supervisors",
 )
 def list_supervisors(
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> List[SupervisorItem]:
     """List all floor supervisors in the organization."""
@@ -221,15 +234,20 @@ def list_supervisors(
 )
 def invite_supervisor(
     payload: SupervisorInvitePayload,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> SupervisorItem:
     """Invite a new supervisor to the organization."""
-    return service.invite_supervisor(
-        organization_id=admin_user.organization_id,
-        payload=payload,
-        actor_id=admin_user.user_id,
-    )
+    try:
+        return service.invite_supervisor(
+            organization_id=admin_user.organization_id,
+            payload=payload,
+            actor_id=admin_user.user_id,
+        )
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.put(
@@ -241,16 +259,21 @@ def invite_supervisor(
 def update_supervisor(
     user_id: UUID,
     payload: SupervisorUpdatePayload,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> Dict[str, Any]:
     """Update supervisor department assignment or status."""
-    return service.update_supervisor(
-        organization_id=admin_user.organization_id,
-        user_id=user_id,
-        payload=payload,
-        actor_id=admin_user.user_id,
-    )
+    try:
+        return service.update_supervisor(
+            organization_id=admin_user.organization_id,
+            user_id=user_id,
+            payload=payload,
+            actor_id=admin_user.user_id,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 # =====================================================================
@@ -268,7 +291,7 @@ def list_workers(
     page_size: int = Query(25, ge=1, le=100),
     status_filter: Optional[str] = Query(None, alias="status"),
     dept_filter: Optional[UUID] = Query(None, alias="department_id"),
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> Dict[str, Any]:
     """List workers with real operational state and pagination."""
@@ -289,15 +312,50 @@ def list_workers(
 )
 def invite_worker(
     payload: WorkerInvitePayload,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> EnterpriseWorkerItem:
     """Generate accessible worker invitation for AMAP onboarding."""
-    return service.invite_worker(
-        organization_id=admin_user.organization_id,
-        payload=payload,
-        actor_id=admin_user.user_id,
-    )
+    try:
+        return service.invite_worker(
+            organization_id=admin_user.organization_id,
+            payload=payload,
+            actor_id=admin_user.user_id,
+        )
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.put(
+    "/workers/{user_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Update worker details",
+)
+def update_worker(
+    user_id: UUID,
+    payload: WorkerUpdatePayload,
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
+    service: OrganizationManagementService = Depends(get_org_management_service),
+) -> Dict[str, Any]:
+    """
+    Update an existing worker: full name, email, badge number, department
+    assignment, and/or account status (deactivate / reactivate).
+    """
+    try:
+        return service.update_worker(
+            organization_id=admin_user.organization_id,
+            user_id=user_id,
+            payload=payload,
+            actor_id=admin_user.user_id,
+        )
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 # =====================================================================
@@ -311,7 +369,7 @@ def invite_worker(
     summary="List organization workflows",
 )
 def list_workflows(
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> List[WorkflowTemplate]:
     """List approved assembly workflow templates."""
@@ -326,36 +384,48 @@ def list_workflows(
 )
 def create_workflow(
     payload: WorkflowCreatePayload,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> WorkflowTemplate:
     """Create approved workflow template with step sequences."""
-    return service.create_workflow(
-        organization_id=admin_user.organization_id,
-        payload=payload,
-        actor_id=admin_user.user_id,
-    )
+    try:
+        return service.create_workflow(
+            organization_id=admin_user.organization_id,
+            payload=payload,
+            actor_id=admin_user.user_id,
+        )
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message)
 
 
 @router.put(
     "/workflows/{workflow_id}",
-    response_model=Dict[str, Any],
+    response_model=WorkflowTemplate,
     status_code=status.HTTP_200_OK,
     summary="Update workflow template",
 )
 def update_workflow(
     workflow_id: UUID,
     payload: WorkflowUpdatePayload,
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
-) -> Dict[str, Any]:
-    """Update workflow template definition."""
-    return service.update_workflow(
-        organization_id=admin_user.organization_id,
-        workflow_id=workflow_id,
-        payload=payload,
-        actor_id=admin_user.user_id,
-    )
+) -> WorkflowTemplate:
+    """Update workflow template definition (persisted to PostgreSQL)."""
+    try:
+        return service.update_workflow(
+            organization_id=admin_user.organization_id,
+            workflow_id=workflow_id,
+            payload=payload,
+            actor_id=admin_user.user_id,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message)
 
 
 # =====================================================================
@@ -369,7 +439,7 @@ def update_workflow(
     summary="Get organization assistance overview",
 )
 def get_assistance_overview(
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> List[Dict[str, Any]]:
     """Retrieve organization-wide assistance requests."""
@@ -383,7 +453,7 @@ def get_assistance_overview(
     summary="Get organization emergency events",
 )
 def get_emergency_events(
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> List[Dict[str, Any]]:
     """Retrieve active emergency stop safety halts."""
@@ -397,7 +467,7 @@ def get_emergency_events(
     summary="Get organization operational & accessibility analytics",
 )
 def get_organization_analytics(
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> OrganizationAnalyticsSummary:
     """Retrieve aggregate non-medical operational and accessibility readiness analytics."""
@@ -412,8 +482,53 @@ def get_organization_analytics(
 )
 def query_audit_logs(
     limit: int = Query(50, ge=1, le=200),
-    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "super_admin")),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
     service: OrganizationManagementService = Depends(get_org_management_service),
 ) -> List[OrganizationAuditEventItem]:
     """Query immutable audit events for the organization."""
     return service.query_audit_logs(organization_id=admin_user.organization_id, limit=limit)
+
+
+# =====================================================================
+# 9. Organization-Owned Datasets & Records (Phase 7)
+# =====================================================================
+
+@router.get(
+    "/datasets",
+    response_model=List[DatasetItem],
+    status_code=status.HTTP_200_OK,
+    summary="List the organization's datasets with record statistics",
+)
+def list_datasets(
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
+    service: OrganizationManagementService = Depends(get_org_management_service),
+) -> List[DatasetItem]:
+    """List organization-owned datasets (server-side scoped to the caller's organization)."""
+    return service.list_datasets(organization_id=admin_user.organization_id)
+
+
+@router.get(
+    "/datasets/{dataset_id}/records",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    summary="List records in one of the organization's datasets",
+)
+def list_dataset_records(
+    dataset_id: UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    record_type: Optional[str] = Query(None),
+    admin_user: AuthenticatedUserContext = Depends(require_roles("admin", "organization_admin", "super_admin")),
+    service: OrganizationManagementService = Depends(get_org_management_service),
+) -> Dict[str, Any]:
+    """List typed records inside an organization-owned dataset (cross-org access is a 404)."""
+    try:
+        return service.list_dataset_records(
+            dataset_id=dataset_id,
+            organization_id=admin_user.organization_id,
+            page=page,
+            page_size=page_size,
+            record_type=record_type,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
