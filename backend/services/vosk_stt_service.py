@@ -53,9 +53,9 @@ SUPPORTED_LANGUAGES = ("en", "hi")
 #                 model + bigger graph in the same download size class.
 #   indian        vosk-model-small-en-in-0.4    (~38 MB)  trained on Indian
 #                 English; often the best small model for Indian accents.
-#   large         vosk-model-en-us-0.22         (~971 MB) DEFAULT — full
+#   large         vosk-model-en-us-0.22         (1.9 GB zip) DEFAULT — full
 #                 en-us model, best en-us accuracy Vosk ships.
-#   indian-large  vosk-model-en-in-0.5           (~2.4 GB) full Indian-English
+#   indian-large  vosk-model-en-in-0.5           (~971 MB) full Indian-English
 #                 model — the most accurate option for Indian speakers.
 #
 # Selection: env AMAP_VOSK_MODEL_TIER (default "large"). Hindi has only the
@@ -97,15 +97,17 @@ VOSK_MODEL_SPECS: Dict[str, Dict[str, Dict[str, Any]]] = {
         "large": {
             "directory": "vosk-model-en-us-0.22",
             "version": "0.22",
-            "sha256": "0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c",
-            "size_bytes": 971186187,
+            # Verified against the live alphacephei.com zip on 2026-10-17.
+            "sha256": "47f9a81ebb039dbb0bd319175c36ac393c0893b796c2b6303e64cf58c27b69f6",
+            "size_bytes": 1913365522,
             "source": "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
         },
         "indian-large": {
             "directory": "vosk-model-en-in-0.5",
             "version": "0.5",
-            "sha256": "d6755c99b0bc8fb3c56962690dc55e9792abd92550dda0b8899f17da55bf3f30",
-            "size_bytes": 2423807363,
+            # From the mychen76/vosk-models LFS pointer (size 971186187).
+            "sha256": "0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c",
+            "size_bytes": 971186187,
             "source": "https://alphacephei.com/vosk/models/vosk-model-en-in-0.5.zip",
         },
     },

@@ -81,8 +81,8 @@ Provisioned by `scripts/prefetch_vosk_models.py` into `backend/.vosk_cache/`
 | English | `vosk-model-en-us-0.22-lgraph` | lgraph | `d9838b4aaa82a75c4a17f5aca300eaca129aaab2a7cbf951bafbb500eb9c4334` | ~131 MB |
 | English | `vosk-model-small-en-us-0.15` | small (legacy) | `30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498` | ~41 MB |
 | English | `vosk-model-small-en-in-0.4` | indian | `20663dcac4d5cb783a579c54d98339344a688e4ec6e1b4a4b059fd1235454cc7` | ~38 MB |
-| English | `vosk-model-en-us-0.22` | **large (default)** | `0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c` | ~971 MB |
-| English | `vosk-model-en-in-0.5` | indian-large | `d6755c99b0bc8fb3c56962690dc55e9792abd92550dda0b8899f17da55bf3f30` | ~2.4 GB |
+| English | `vosk-model-en-us-0.22` | **large (default)** | `47f9a81ebb039dbb0bd319175c36ac393c0893b796c2b6303e64cf58c27b69f6` | ~1.9 GB |
+| English | `vosk-model-en-in-0.5` | indian-large | `0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c` | ~971 MB |
 | Hindi | `vosk-model-small-hi-0.22` | every tier | `7c50a10866889f0ac21d912c20537a055a597ed09fc1d3e5bcd798f9f0017e48` | ~44 MB |
 
 Source: `https://alphacephei.com/vosk/models/` (Apache-2.0). Every byte is
@@ -112,7 +112,7 @@ model (build stage `vosk-models`) and once as the runtime
 downloaded). If the two ever disagree, the registry self-heals by scanning
 the models directory and loading whatever model is actually present.
 
-- `large` (default): full en-us model, best en-us accuracy Vosk ships.
+- `large` (default): full en-us model (1.9 GB zip), best en-us accuracy Vosk ships.
 - `indian` / `indian-large`: trained on Indian English — recommended for
   strongly Indian-accented speakers (0.5 is the most accurate option).
 - `lgraph`: best accuracy per megabyte; general US English.

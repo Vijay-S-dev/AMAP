@@ -60,7 +60,7 @@ HI_ZIP_SHA256 = "7c50a10866889f0ac21d912c20537a055a597ed09fc1d3e5bcd798f9f0017e4
 #   small         legacy 40 MB model — usable but poor accuracy on accents
 #   lgraph        131 MB, much better than small in the same size class
 #   indian        38 MB model trained on Indian English (accent-matched)
-#   large         DEFAULT — 971 MB full en-us model (best en-us accuracy)
+#   large         DEFAULT — 1.9 GB zip, full en-us model (best en-us accuracy)
 #   indian-large  2.4 GB full Indian-English model (best for Indian accents)
 EN_MODEL_TIERS: dict[str, dict] = {
     "small": {
@@ -86,12 +86,16 @@ EN_MODEL_TIERS: dict[str, dict] = {
     "large": {
         "name": "vosk-model-en-us-0.22",
         "zip_url": "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
-        "zip_sha256": "0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c",
+        # Verified against the live alphacephei.com zip on 2026-10-17 (the
+        # build downloaded it and this is the checksum it served); also matches
+        # the mychen76/vosk-models LFS pointer (size 1913365522).
+        "zip_sha256": "47f9a81ebb039dbb0bd319175c36ac393c0893b796c2b6303e64cf58c27b69f6",
     },
     "indian-large": {
         "name": "vosk-model-en-in-0.5",
         "zip_url": "https://alphacephei.com/vosk/models/vosk-model-en-in-0.5.zip",
-        "zip_sha256": "d6755c99b0bc8fb3c56962690dc55e9792abd92550dda0b8899f17da55bf3f30",
+        # From the mychen76/vosk-models LFS pointer (size 971186187).
+        "zip_sha256": "0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c",
     },
 }
 
@@ -128,8 +132,8 @@ HI_MODEL = {
 DEFAULT_TIER = "large"
 TIER_HELP = (
     "English model tier: small (40 MB legacy), lgraph (131 MB), indian "
-    "(38 MB Indian-English), large (971 MB en-us, default, best en-us "
-    "accuracy), indian-large (2.4 GB Indian-English, most accurate for "
+    "(38 MB Indian-English), large (1.9 GB en-us zip, default, best en-us "
+    "accuracy), indian-large (971 MB Indian-English, most accurate for "
     "Indian accents)"
 )
 
@@ -206,8 +210,19 @@ def provision(language: str, spec: dict, out_dir: Path, fatal: bool = True) -> b
         if download(spec["zip_url"], zip_path):
             digest = sha256_file(zip_path)
             if digest != spec["zip_sha256"]:
-                print(f"  checksum mismatch for official zip ({digest}); aborting")
-                sys.exit(1)
+                print(
+                    f"  CHECKSUM MISMATCH for {name}: expected "
+                    f"{spec['zip_sha256']}, got {digest}. File NOT installed."
+                )
+                print(
+                    "  If this download is trustworthy (alphacephei.com sometimes "
+                    "re-packs zips), update zip_sha256 for this tier in "
+                    "scripts/prefetch_vosk_models.py and "
+                    "backend/services/vosk_stt_service.py, then rebuild."
+                )
+                if fatal:
+                    sys.exit(1)
+                return False
             install_from_zip(zip_path, out_dir)
             print(f"{language}: installed {name} from official zip (sha256 verified)")
             return True
