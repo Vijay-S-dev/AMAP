@@ -59,7 +59,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: backend/.vosk_cache
-          key: vosk-small-v1-${{ hashFiles('scripts/prefetch_vosk_models.py') }}
+          key: vosk-large-v3-${{ hashFiles('scripts/prefetch_vosk_models.py') }}
 
       - name: Install backend dependencies
         run: pip install -r backend/requirements.txt

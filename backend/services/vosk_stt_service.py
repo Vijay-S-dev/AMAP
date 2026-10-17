@@ -42,25 +42,122 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES = ("en", "hi")
 
+# ----------------------------------------------------------------------------
+# Model tiers. The original deployment used the smallest English model Vosk
+# ships (small-en-us-0.15, 40 MB) — acceptable latency, but its accuracy on
+# accented (especially Indian-accent) English and industrial vocabulary is
+# poor. The registry now supports selectable model tiers per language:
+#
+#   small         vosk-model-small-en-us-0.15   (~41 MB)  legacy lightweight
+#   lgraph        vosk-model-en-us-0.22-lgraph  (~131 MB) much larger acoustic
+#                 model + bigger graph in the same download size class.
+#   indian        vosk-model-small-en-in-0.4    (~38 MB)  trained on Indian
+#                 English; often the best small model for Indian accents.
+#   large         vosk-model-en-us-0.22         (~971 MB) DEFAULT — full
+#                 en-us model, best en-us accuracy Vosk ships.
+#   indian-large  vosk-model-en-in-0.5           (~2.4 GB) full Indian-English
+#                 model — the most accurate option for Indian speakers.
+#
+# Selection: env AMAP_VOSK_MODEL_TIER (default "large"). Hindi has only the
+# small model, so every tier resolves to it for "hi" (with a logged note).
+# Runtime fallback: if the preferred tier's model directory is not present
+# but the "small" one is, the registry falls back to small instead of
+# failing — voice keeps working at reduced accuracy.
+# ----------------------------------------------------------------------------
+VOSK_MODEL_TIERS = ("small", "lgraph", "indian", "large", "indian-large")
+DEFAULT_MODEL_TIER = "large"
+
 # Deterministic model provisioning (scripts/prefetch_vosk_models.py installs
 # exactly these versions into AMAP_VOSK_MODELS_DIR, default backend/.vosk_cache).
-VOSK_MODEL_SPECS: Dict[str, Dict[str, str]] = {
+# SHA-256 values are the official zip checksums (alphacephei / published
+# LFS mirrors — rhasspy & mychen76 vosk-models repos, cross-checked).
+VOSK_MODEL_SPECS: Dict[str, Dict[str, Dict[str, Any]]] = {
     "en": {
-        "directory": "vosk-model-small-en-us-0.15",
-        "version": "0.15",
-        "sha256": "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498",
-        "size_bytes": 41205931,
-        "source": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+        "small": {
+            "directory": "vosk-model-small-en-us-0.15",
+            "version": "0.15",
+            "sha256": "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498",
+            "size_bytes": 41205931,
+            "source": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+        },
+        "lgraph": {
+            "directory": "vosk-model-en-us-0.22-lgraph",
+            "version": "0.22-lgraph",
+            "sha256": "d9838b4aaa82a75c4a17f5aca300eaca129aaab2a7cbf951bafbb500eb9c4334",
+            "size_bytes": 130557655,
+            "source": "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip",
+        },
+        "indian": {
+            "directory": "vosk-model-small-en-in-0.4",
+            "version": "0.4",
+            "sha256": "20663dcac4d5cb783a579c54d98339344a688e4ec6e1b4a4b059fd1235454cc7",
+            "size_bytes": 37573330,
+            "source": "https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip",
+        },
+        "large": {
+            "directory": "vosk-model-en-us-0.22",
+            "version": "0.22",
+            "sha256": "0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c",
+            "size_bytes": 971186187,
+            "source": "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
+        },
+        "indian-large": {
+            "directory": "vosk-model-en-in-0.5",
+            "version": "0.5",
+            "sha256": "d6755c99b0bc8fb3c56962690dc55e9792abd92550dda0b8899f17da55bf3f30",
+            "size_bytes": 2423807363,
+            "source": "https://alphacephei.com/vosk/models/vosk-model-en-in-0.5.zip",
+        },
     },
     "hi": {
-        "directory": "vosk-model-small-hi-0.22",
-        "version": "0.22",
-        # SHA-256 of the official zip (published checksum list, VocaHQ/vocalinux).
-        "sha256": "7c50a10866889f0ac21d912c20537a055a597ed09fc1d3e5bcd798f9f0017e48",
-        "size_bytes": 44458845,
-        "source": "https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip",
+        # Only a small Hindi model exists; every tier resolves to it.
+        "small": {
+            "directory": "vosk-model-small-hi-0.22",
+            "version": "0.22",
+            # SHA-256 of the official zip (published checksum list, VocaHQ/vocalinux).
+            "sha256": "7c50a10866889f0ac21d912c20537a055a597ed09fc1d3e5bcd798f9f0017e48",
+            "size_bytes": 44458845,
+            "source": "https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip",
+        },
     },
 }
+
+
+def preferred_tier() -> str:
+    """Active model tier: env AMAP_VOSK_MODEL_TIER, else DEFAULT_MODEL_TIER.
+
+    Unknown values log a warning and fall back to the default tier (never
+    crash voice over a typo in an env var)."""
+    env_tier = (os.getenv("AMAP_VOSK_MODEL_TIER") or "").strip().lower()
+    if not env_tier:
+        return DEFAULT_MODEL_TIER
+    if env_tier not in VOSK_MODEL_TIERS:
+        logger.warning(
+            "AMAP_VOSK_MODEL_TIER='%s' is not a known tier %s; using '%s'",
+            env_tier, VOSK_MODEL_TIERS, DEFAULT_MODEL_TIER,
+        )
+        return DEFAULT_MODEL_TIER
+    return env_tier
+
+
+def spec_for(language: str, tier: Optional[str] = None) -> Dict[str, Any]:
+    """Resolve the model spec for a language under a tier.
+
+    Hindi (and any language without the requested tier) resolves to its
+    "small" spec — the only one that exists."""
+    normalized = (language or "").strip().lower().split("-")[0]
+    language_specs = VOSK_MODEL_SPECS.get(normalized)
+    if language_specs is None:
+        raise VoskModelUnavailableError(f"Unsupported language '{language}'")
+    chosen = tier or preferred_tier()
+    return language_specs.get(chosen) or language_specs["small"]
+
+
+def resolved_model_specs(tier: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """The per-language specs that would ACTUALLY be used for `tier`
+    (after per-language fallback to "small"). Used by provisioning checks
+    and tests."""
+    return {language: spec_for(language, tier) for language in SUPPORTED_LANGUAGES}
 
 DEFAULT_MODELS_DIR = Path(__file__).resolve().parent.parent / ".vosk_cache"
 
@@ -100,11 +197,60 @@ class VoskModelRegistry:
     def models_dir(self) -> Path:
         return self._models_dir
 
-    def model_path(self, language: str) -> Path:
-        spec = VOSK_MODEL_SPECS.get(language)
-        if spec is None:
-            raise VoskModelUnavailableError(f"Unsupported language '{language}'")
+    def model_path(self, language: str, tier: Optional[str] = None) -> Path:
+        """Directory of the model for `language` under `tier` (no existence check)."""
+        spec = spec_for(language, tier)
         return self._models_dir / spec["directory"]
+
+    @staticmethod
+    def _dir_looks_like_model(path: Path) -> bool:
+        return (path / "conf").is_dir() or (path / "am").is_dir()
+
+    def resolve_model_dir(self, language: str) -> Path:
+        """Best AVAILABLE model directory for the language.
+
+        Preference order: the active tier's model, then the "small" model.
+        Raises VoskModelUnavailableError when neither exists (the error names
+        every directory that was tried and the provisioning command)."""
+        normalized = (language or "").strip().lower().split("-")[0]
+        if normalized not in VOSK_MODEL_SPECS:
+            raise VoskModelUnavailableError(f"Unsupported language '{language}'")
+        tier = preferred_tier()
+        # Preference chain: the active tier, then the default tier, then
+        # small, then EVERY known tier that is actually present in the
+        # models directory. A build-arg/runtime-env mismatch (e.g. image
+        # baked with VOSK_TIER=indian-large but the env var not exported
+        # into the container) still resolves to the model the image really
+        # contains, instead of failing voice.
+        chain: List[str] = []
+        for candidate_tier in (tier, DEFAULT_MODEL_TIER, "small", *VOSK_MODEL_TIERS):
+            if candidate_tier not in chain:
+                chain.append(candidate_tier)
+        candidates: List[Path] = []
+        seen_dirs = set()
+        for candidate_tier in chain:
+            spec = spec_for(normalized, candidate_tier)
+            if spec["directory"] not in seen_dirs:
+                seen_dirs.add(spec["directory"])
+                candidates.append(self._models_dir / spec["directory"])
+        tier_spec = spec_for(normalized, tier)
+
+        for candidate in candidates:
+            if self._dir_looks_like_model(candidate):
+                if candidate.name != tier_spec["directory"]:
+                    logger.warning(
+                        "Vosk model tier '%s' (%s) is not provisioned for '%s'; "
+                        "falling back to '%s' (reduced accuracy). Re-provision "
+                        "with: AMAP_VOSK_MODEL_TIER=%s python scripts/prefetch_vosk_models.py",
+                        tier, tier_spec["directory"], normalized,
+                        candidate.name, tier,
+                    )
+                return candidate
+        tried = ", ".join(str(c) for c in candidates)
+        raise VoskModelUnavailableError(
+            f"Vosk model directory missing for '{normalized}' (tried: {tried}). "
+            "Run scripts/prefetch_vosk_models.py to provision the models."
+        )
 
     def model_status(self, language: str) -> str:
         if language in self._models:
@@ -121,10 +267,14 @@ class VoskModelRegistry:
             overall = "ERROR"
         else:
             overall = "NOT_INITIALIZED"
-        names = "+".join(
-            f"vosk-model-small-{'en-us' if lang == 'en' else 'hi'}-{VOSK_MODEL_SPECS[lang]['version']}"
-            for lang in SUPPORTED_LANGUAGES
-        )
+        names = []
+        for lang in SUPPORTED_LANGUAGES:
+            try:
+                names.append(self.resolve_model_dir(lang).name)
+            except VoskModelUnavailableError:
+                # Nothing provisioned: still report the intended model name.
+                names.append(spec_for(lang)["directory"])
+        names = "+".join(names)
         return STTHealthStatus(
             model_status=overall,
             model_name=names,
@@ -148,14 +298,12 @@ class VoskModelRegistry:
         with self._lock:
             if normalized in self._models:
                 return self._models[normalized]
-            path = self.model_path(normalized)
-            if not (path / "conf").is_dir() and not (path / "am").is_dir():
-                self._model_errors[normalized] = (
-                    f"Vosk model directory missing: {path}. "
-                    "Run scripts/prefetch_vosk_models.py to provision the models."
-                )
-                logger.error(self._model_errors[normalized])
-                raise VoskModelUnavailableError(self._model_errors[normalized])
+            try:
+                path = self.resolve_model_dir(normalized)
+            except VoskModelUnavailableError as exc:
+                self._model_errors[normalized] = str(exc)
+                logger.error(str(exc))
+                raise VoskModelUnavailableError(str(exc)) from None
             try:
                 from vosk import Model  # imported lazily so non-voice tests stay fast
 

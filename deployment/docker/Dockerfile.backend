@@ -18,22 +18,32 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Stage 2: Vosk speech-recognition models (deterministic, checksum-verified).
-# scripts/prefetch_vosk_models.py installs exactly:
-#   vosk-model-small-en-us-0.15 (sha256 30f26242...80942498, ~68 MB unpacked)
-#   vosk-model-small-hi-0.22    (sha256 7c50a108...9f0017e48, ~79 MB unpacked)
-# and verifies every byte before installation. This happens at IMAGE BUILD
-# time (layer-cached); containers never download models at startup.
+# scripts/prefetch_vosk_models.py installs (default tier "large"):
+#   vosk-model-en-us-0.22-lgraph (sha256 d9838b4a...eb9c4334, 131 MB zip)
+#   vosk-model-small-hi-0.22     (sha256 7c50a108...9f0017e48, ~79 MB unpacked)
+# and verifies every byte before installation. Build a different English
+# model tier with: --build-arg VOSK_TIER={small,lgraph,indian,large,indian-large}
+# (e.g. "indian" / "indian-large" are trained on Indian English). This
+# happens at IMAGE BUILD time (layer-cached); containers never download
+# models at startup.
 FROM python:3.11-slim AS vosk-models
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work
+ARG VOSK_TIER=large
 COPY scripts/prefetch_vosk_models.py /work/scripts/prefetch_vosk_models.py
-RUN python /work/scripts/prefetch_vosk_models.py --dir /models
+RUN python /work/scripts/prefetch_vosk_models.py --dir /models --tier "$VOSK_TIER"
 
 # Stage 2: Runtime Image
 FROM python:3.11-slim AS runtime
+
+# Keep the runtime tier in sync with the model that was actually baked in
+# stage "vosk-models" (the registry also self-heals on mismatch — see
+# VoskModelRegistry.resolve_model_dir).
+ARG VOSK_TIER=large
+ENV AMAP_VOSK_MODEL_TIER=$VOSK_TIER
 
 WORKDIR /app
 

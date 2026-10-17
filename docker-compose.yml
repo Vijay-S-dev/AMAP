@@ -42,6 +42,9 @@ services:
     build:
       context: .
       dockerfile: deployment/docker/Dockerfile.backend
+      args:
+        # English Vosk model tier: large (default) | small | lgraph | indian | indian-large
+        VOSK_TIER: ${VOSK_TIER:-large}
     image: amap-backend:local
     command:
       - /bin/sh
@@ -61,6 +64,9 @@ services:
     build:
       context: .
       dockerfile: deployment/docker/Dockerfile.backend
+      args:
+        # English Vosk model tier: large (default) | small | lgraph | indian | indian-large
+        VOSK_TIER: ${VOSK_TIER:-large}
     container_name: amap-backend
     restart: unless-stopped
     environment:

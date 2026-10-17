@@ -76,20 +76,60 @@ WebSocket connections. No unauthenticated voice execution path exists.
 Provisioned by `scripts/prefetch_vosk_models.py` into `backend/.vosk_cache/`
 (gitignored; `AMAP_VOSK_MODELS_DIR` overrides):
 
-| Language | Model | Version | Zip SHA-256 | Unpacked |
+| Language | Model | Tier | Zip SHA-256 | Zip size |
 |---|---|---|---|---|
-| English | `vosk-model-small-en-us-0.15` | 0.15 | `30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498` | ~68 MB |
-| Hindi | `vosk-model-small-hi-0.22` | 0.22 | `7c50a10866889f0ac21d912c20537a055a597ed09fc1d3e5bcd798f9f0017e48` | ~79 MB |
+| English | `vosk-model-en-us-0.22-lgraph` | lgraph | `d9838b4aaa82a75c4a17f5aca300eaca129aaab2a7cbf951bafbb500eb9c4334` | ~131 MB |
+| English | `vosk-model-small-en-us-0.15` | small (legacy) | `30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498` | ~41 MB |
+| English | `vosk-model-small-en-in-0.4` | indian | `20663dcac4d5cb783a579c54d98339344a688e4ec6e1b4a4b059fd1235454cc7` | ~38 MB |
+| English | `vosk-model-en-us-0.22` | **large (default)** | `0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c` | ~971 MB |
+| English | `vosk-model-en-in-0.5` | indian-large | `d6755c99b0bc8fb3c56962690dc55e9792abd92550dda0b8899f17da55bf3f30` | ~2.4 GB |
+| Hindi | `vosk-model-small-hi-0.22` | every tier | `7c50a10866889f0ac21d912c20537a055a597ed09fc1d3e5bcd798f9f0017e48` | ~44 MB |
 
 Source: `https://alphacephei.com/vosk/models/` (Apache-2.0). Every byte is
 checksum-verified before installation; restricted networks fall back to
-checksum-pinned GitHub mirrors. Installation is idempotent.
+checksum-pinned GitHub mirrors (small tier only). Installation is idempotent.
+
+### Choosing a tier
+
+The original deployment shipped the 40 MB `small-en-us` model; its accuracy
+on accented (especially Indian-accent) English and industrial vocabulary is
+poor. The default is now **large** (the full en-us model); **lgraph** is a
+lighter alternative in the old download class. Select a tier via env or flag:
+
+```bash
+# Local (bash) or CI:
+AMAP_VOSK_MODEL_TIER=indian python scripts/prefetch_vosk_models.py
+python scripts/prefetch_vosk_models.py --tier indian-large
+
+# Docker (PowerShell): set the env var, then rebuild; default is large
+$env:VOSK_TIER = "indian-large"
+docker compose build backend
+```
+
+The selected tier is baked twice into the image: once as the downloaded
+model (build stage `vosk-models`) and once as the runtime
+`AMAP_VOSK_MODEL_TIER` env (so the registry loads exactly what was
+downloaded). If the two ever disagree, the registry self-heals by scanning
+the models directory and loading whatever model is actually present.
+
+- `large` (default): full en-us model, best en-us accuracy Vosk ships.
+- `indian` / `indian-large`: trained on Indian English — recommended for
+  strongly Indian-accented speakers (0.5 is the most accurate option).
+- `lgraph`: best accuracy per megabyte; general US English.
+- `small`: legacy lightweight model.
+
+The backend registry reads the same `AMAP_VOSK_MODEL_TIER` env at runtime
+and falls back to the `small` model (with a logged warning) when the
+preferred tier is not provisioned, so voice never hard-fails on a missing
+tier. Hindi always resolves to its only (small) model.
 
 **Startup behavior:** `app/main.py` preloads both models once per process in a
-background thread at startup (~1.3 s total on 2 vCPU). `GET /voice/stt-health`
+background thread at startup (the large en-us model takes ~5–10 s on 2 vCPU;
+early voice connections wait for it if needed). `GET /voice/stt-health`
 reports `READY` / `ERROR` / `NOT_INITIALIZED`. Containers never download models
 at runtime — the Docker backend image bakes the models in at **build** time
 (`Dockerfile.backend` stage `vosk-models`), so startup is fully offline.
+
 
 ## Endpoints
 

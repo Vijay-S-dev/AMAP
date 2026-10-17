@@ -40,6 +40,7 @@ Usage:  python scripts/prefetch_vosk_models.py [--dir <models_dir>]
 from __future__ import annotations
 
 import argparse
+import os
 import hashlib
 import shutil
 import subprocess
@@ -55,43 +56,82 @@ DEFAULT_OUT = REPO_ROOT / "backend" / ".vosk_cache"
 EN_ZIP_SHA256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
 HI_ZIP_SHA256 = "7c50a10866889f0ac21d912c20537a055a597ed09fc1d3e5bcd798f9f0017e48"
 
-MODELS = {
-    "en": {
+# English model tiers (selected via --tier / AMAP_VOSK_MODEL_TIER).
+#   small         legacy 40 MB model — usable but poor accuracy on accents
+#   lgraph        131 MB, much better than small in the same size class
+#   indian        38 MB model trained on Indian English (accent-matched)
+#   large         DEFAULT — 971 MB full en-us model (best en-us accuracy)
+#   indian-large  2.4 GB full Indian-English model (best for Indian accents)
+EN_MODEL_TIERS: dict[str, dict] = {
+    "small": {
         "name": "vosk-model-small-en-us-0.15",
         "zip_url": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
         "zip_sha256": EN_ZIP_SHA256,
         "mirror_repo": "https://github.com/kercre123/vosk-models.git",
         "mirror_path": "vosk-model-small-en-us-0.15.zip",  # zip blob in repo root
     },
-    "hi": {
-        "name": "vosk-model-small-hi-0.22",
-        "zip_url": "https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip",
-        "zip_sha256": HI_ZIP_SHA256,
-        # Unpacked tree inside a GitHub repo (sparse checkout).
-        "mirror_repo": "https://github.com/rajkishorbgp/JARVIS-AI-Assistant.git",
-        "mirror_path": "vosk/vosk-model-small-hi-0.22",
-        # Per-file manifest of the unpacked tree (sha256), pinned for the
-        # mirror fallback so installation stays deterministic even without the
-        # official zip. Cross-checked against the working model validated in
-        # the AMAP feasibility investigation (4/4 Hindi command clips).
-        "manifest": {
-            "README": "9ffae7d857a7671a0a53b9f6f432e7c312459fde02ca1f139d808fffc3d2644a",
-            "am/final.mdl": "c5d7ea51a074bc64430137a74fc8a0a06097df485a3d356cf37d2d78ef6bd712",
-            "conf/mfcc.conf": "31dab8bb1dea9b33e039988ac079dfe5d50ebaa4a94826b9f9adc8fe84b147c6",
-            "conf/model.conf": "d8d91d310a9659fed2d89f8ea4996af6163a43c3ab008cd278e4264120551712",
-            "graph/Gr.fst": "9b219e22fc7d3033ba1b175757a700d8f02139d75d7f57cc12bc318d53038ccf",
-            "graph/HCLr.fst": "4f36aad2566853473603abc66fac3985eff0860229c465540b348c22fcbbb4f5",
-            "graph/disambig_tid.int": "3f87fd5a92742b3827d2da31dae0874c4077e9f0011e507423b6f876d743e37b",
-            "graph/phones/word_boundary.int": "b8f981d84d8765fb15003ac54ec0f9599efa65a00d6d4d60086e5969ad45ff01",
-            "ivector/final.dubm": "e495541a7e99e78a42cd098adfd94a72b6118a8c0d3c5ea8fe17436b578c55d4",
-            "ivector/final.ie": "89d91ca6e99e7e4f067b3ef8ac1faa9ba73276c225d927aaa296492a03a639b7",
-            "ivector/final.mat": "3009aea21b59ad36f86c89d68dd152264aa3a784260dbdace823d991f3ff71b4",
-            "ivector/global_cmvn.stats": "a056b7592116d4a5e5fc6f872f8398190878bb6690bf486827fa79dabaf33f97",
-            "ivector/online_cmvn.conf": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "ivector/splice.conf": "9f0c5f7c82d18eaf25d8bce470efa9f7741f88411fe428774bc0a9bb69a24756",
-        },
+    "lgraph": {
+        "name": "vosk-model-en-us-0.22-lgraph",
+        "zip_url": "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip",
+        # Official zip checksum (cross-checked: rhasspy/vosk-models and
+        # mychen76/vosk-models LFS pointers on huggingface.co).
+        "zip_sha256": "d9838b4aaa82a75c4a17f5aca300eaca129aaab2a7cbf951bafbb500eb9c4334",
+    },
+    "indian": {
+        "name": "vosk-model-small-en-in-0.4",
+        "zip_url": "https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip",
+        # Official zip checksum (localstack/vosk-models LFS pointer).
+        "zip_sha256": "20663dcac4d5cb783a579c54d98339344a688e4ec6e1b4a4b059fd1235454cc7",
+    },
+    "large": {
+        "name": "vosk-model-en-us-0.22",
+        "zip_url": "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
+        "zip_sha256": "0365c52f79308d81c2de832cf934ce42da6bf7e04dd3acd4203cacf50ab70f5c",
+    },
+    "indian-large": {
+        "name": "vosk-model-en-in-0.5",
+        "zip_url": "https://alphacephei.com/vosk/models/vosk-model-en-in-0.5.zip",
+        "zip_sha256": "d6755c99b0bc8fb3c56962690dc55e9792abd92550dda0b8899f17da55bf3f30",
     },
 }
+
+# Hindi: only a small model exists; it is provisioned for every tier.
+HI_MODEL = {
+    "name": "vosk-model-small-hi-0.22",
+    "zip_url": "https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip",
+    "zip_sha256": HI_ZIP_SHA256,
+    # Unpacked tree inside a GitHub repo (sparse checkout).
+    "mirror_repo": "https://github.com/rajkishorbgp/JARVIS-AI-Assistant.git",
+    "mirror_path": "vosk/vosk-model-small-hi-0.22",
+    # Per-file manifest of the unpacked tree (sha256), pinned for the
+    # mirror fallback so installation stays deterministic even without the
+    # official zip. Cross-checked against the working model validated in
+    # the AMAP feasibility investigation (4/4 Hindi command clips).
+    "manifest": {
+        "README": "9ffae7d857a7671a0a53b9f6f432e7c312459fde02ca1f139d808fffc3d2644a",
+        "am/final.mdl": "c5d7ea51a074bc64430137a74fc8a0a06097df485a3d356cf37d2d78ef6bd712",
+        "conf/mfcc.conf": "31dab8bb1dea9b33e039988ac079dfe5d50ebaa4a94826b9f9adc8fe84b147c6",
+        "conf/model.conf": "d8d91d310a9659fed2d89f8ea4996af6163a43c3ab008cd278e4264120551712",
+        "graph/Gr.fst": "9b219e22fc7d3033ba1b175757a700d8f02139d75d7f57cc12bc318d53038ccf",
+        "graph/HCLr.fst": "4f36aad2566853473603abc66fac3985eff08602280c465540b348c22fcbbb4f5",
+        "graph/disambig_tid.int": "3f87fd5a92742b3827d2da31dae0874c4077e9f0011e507423b6f876d743e37b",
+        "graph/phones/word_boundary.int": "b8f981d84d8765fb15003ac54dc0f9599efa65a00b6d4d60086e5969ad45ff01",
+        "ivector/final.dubm": "e495541a7e99e78a42cd098adfd94a72b6118a8c0d3c5ea8fe17436b578c55d4",
+        "ivector/final.ie": "89d91ca6e99e7e4f0673ef8ac1faa9ba73276c225d927aaa296492a03a639b7",
+        "ivector/final.mat": "3009aea21b59ad36f86c89d68dd152264aa3a784260dbdace823d991f3ff71b4",
+        "ivector/global_cmvn.stats": "a056b7592116d4a5e5fc6f872f8398190878bb6690bf486827fa79dabaf33f97",
+        "ivector/online_cmvn.conf": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "ivector/splice.conf": "9f0c5f7c82d18eaf25d8bce470efa9f7721f88411fe428774bc0a9bb69a24756",
+    },
+}
+
+DEFAULT_TIER = "large"
+TIER_HELP = (
+    "English model tier: small (40 MB legacy), lgraph (131 MB), indian "
+    "(38 MB Indian-English), large (971 MB en-us, default, best en-us "
+    "accuracy), indian-large (2.4 GB Indian-English, most accurate for "
+    "Indian accents)"
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -151,11 +191,11 @@ def install_from_zip(zip_path: Path, out_dir: Path) -> None:
         archive.extractall(out_dir)
 
 
-def provision(language: str, spec: dict, out_dir: Path) -> None:
+def provision(language: str, spec: dict, out_dir: Path, fatal: bool = True) -> bool:
     name = spec["name"]
     if already_installed(out_dir, name, spec.get("manifest")):
         print(f"{language}: model already present and verified: {out_dir / name}")
-        return
+        return True
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -170,7 +210,7 @@ def provision(language: str, spec: dict, out_dir: Path) -> None:
                 sys.exit(1)
             install_from_zip(zip_path, out_dir)
             print(f"{language}: installed {name} from official zip (sha256 verified)")
-            return
+            return True
         # Path 2a: GitHub mirror zip blob (English).
         if "mirror_path" in spec and spec["mirror_path"].endswith(".zip"):
             repo_dir = tmp_path / "mirror"
@@ -182,7 +222,7 @@ def provision(language: str, spec: dict, out_dir: Path) -> None:
                     sys.exit(1)
                 install_from_zip(mirror_zip, out_dir)
                 print(f"{language}: installed {name} from GitHub mirror zip (sha256 verified)")
-                return
+                return True
         # Path 2b: GitHub mirror unpacked tree with pinned manifest (Hindi).
         manifest = spec.get("manifest")
         if manifest:
@@ -200,24 +240,46 @@ def provision(language: str, spec: dict, out_dir: Path) -> None:
                     sys.exit(1)
                 shutil.copytree(tree, out_dir / name)
                 print(f"{language}: installed {name} from GitHub mirror tree (manifest verified)")
-                return
+                return True
 
     print(
         f"{language}: could not provision {name}. Install manually from "
         f"{spec['zip_url']} (sha256 {spec['zip_sha256']}) into {out_dir}."
     )
-    sys.exit(1)
+    if fatal:
+        sys.exit(1)
+    return False
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dir", default=str(DEFAULT_OUT), help="models directory")
+    parser.add_argument(
+        "--tier",
+        default=os.getenv("AMAP_VOSK_MODEL_TIER", DEFAULT_TIER),
+        choices=list(EN_MODEL_TIERS),
+        help=TIER_HELP,
+    )
     args = parser.parse_args()
     out_dir = Path(args.dir)
     print(f"AMAP Vosk model provisioning -> {out_dir}")
-    for language, spec in MODELS.items():
-        provision(language, spec, out_dir)
-    print("OK: all Vosk models ready")
+    print(f"English model tier: {args.tier}")
+
+    provision("hi", HI_MODEL, out_dir)
+
+    en_spec = EN_MODEL_TIERS[args.tier]
+    if provision("en", en_spec, out_dir, fatal=(args.tier == "small")):
+        print("OK: all Vosk models ready")
+        return 0
+
+    # Preferred tier could not be fetched: fall back to the small model so
+    # voice keeps working (at reduced accuracy) instead of breaking builds.
+    print(
+        f"WARNING: English tier '{args.tier}' unavailable; falling back to the "
+        "'small' model. Re-run with a working network to upgrade accuracy."
+    )
+    provision("en", EN_MODEL_TIERS["small"], out_dir)
+    print("OK: all Vosk models ready (small fallback)")
     return 0
 
 

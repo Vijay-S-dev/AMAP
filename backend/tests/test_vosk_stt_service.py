@@ -10,16 +10,26 @@ from pathlib import Path
 import pytest
 
 from services.vosk_stt_service import (
+    DEFAULT_MODEL_TIER,
     SUPPORTED_LANGUAGES,
     VOSK_MODEL_SPECS,
+    VOSK_MODEL_TIERS,
     VoskModelRegistry,
     VoskModelUnavailableError,
+    preferred_tier,
+    spec_for,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Real-model tests run whenever ANY usable model per language is present
+# (mirrors the runtime registry, which self-heals to whatever model the
+# deployment actually contains).
 MODELS_PRESENT = all(
-    (REPO_ROOT / "backend" / ".vosk_cache" / spec["directory"]).is_dir()
-    for spec in VOSK_MODEL_SPECS.values()
+    any(
+        (REPO_ROOT / "backend" / ".vosk_cache" / spec["directory"]).is_dir()
+        for spec in VOSK_MODEL_SPECS[lang].values()
+    )
+    for lang in SUPPORTED_LANGUAGES
 )
 
 
@@ -41,7 +51,9 @@ def test_health_shape_and_supported_languages():
     health = registry.health()
     assert health.supported_languages == ["en", "hi"]
     assert tuple(SUPPORTED_LANGUAGES) == ("en", "hi")
-    assert "vosk-model-small-en-us-0.15" in health.model_name
+    # Health names the models the active tier resolves to (default "large"
+    # for English; Hindi has only the small model).
+    assert spec_for("en")["directory"] in health.model_name
     assert "vosk-model-small-hi-0.22" in health.model_name
 
 
@@ -76,12 +88,85 @@ def test_missing_model_dir_is_reported_not_crashed():
 
 
 def test_model_specs_are_fully_pinned():
-    """Deterministic provisioning: every model has source, checksum and size."""
-    for language, spec in VOSK_MODEL_SPECS.items():
-        assert spec["directory"].startswith("vosk-model-small-"), spec
-        assert len(spec["sha256"]) == 64
-        assert spec["size_bytes"] > 10_000_000
-        assert spec["source"].startswith("https://")
+    """Deterministic provisioning: every tier of every language has a pinned
+    source, checksum and size."""
+    for language, tiers in VOSK_MODEL_SPECS.items():
+        assert set(tiers) <= set(VOSK_MODEL_TIERS) or language == "hi"
+        for tier, spec in tiers.items():
+            assert spec["directory"].startswith("vosk-model-"), (language, tier, spec)
+            assert len(spec["sha256"]) == 64, (language, tier)
+            assert spec["size_bytes"] > 10_000_000, (language, tier)
+            assert spec["source"].startswith("https://"), (language, tier)
+    # The default tier is a real tier and English has every tier; Hindi only
+    # small (there is no larger Hindi model).
+    assert DEFAULT_MODEL_TIER in VOSK_MODEL_TIERS
+    assert set(VOSK_MODEL_SPECS["en"]) == set(VOSK_MODEL_TIERS)
+    assert set(VOSK_MODEL_SPECS["hi"]) == {"small"}
+
+
+def test_preferred_tier_from_env(monkeypatch):
+    """AMAP_VOSK_MODEL_TIER selects the tier; junk values fall back to the
+    default instead of breaking voice."""
+    assert preferred_tier() == DEFAULT_MODEL_TIER
+    monkeypatch.setenv("AMAP_VOSK_MODEL_TIER", "indian-large")
+    assert preferred_tier() == "indian-large"
+    monkeypatch.setenv("AMAP_VOSK_MODEL_TIER", "  LGRAPH  ")
+    assert preferred_tier() == "lgraph"
+    monkeypatch.setenv("AMAP_VOSK_MODEL_TIER", "not-a-tier")
+    assert preferred_tier() == DEFAULT_MODEL_TIER
+
+
+def test_spec_for_per_language_fallback():
+    """English resolves the requested tier; Hindi (only small exists) falls
+    back to small for ANY tier."""
+    assert spec_for("en", "lgraph")["directory"] == "vosk-model-en-us-0.22-lgraph"
+    assert spec_for("en", "indian")["directory"] == "vosk-model-small-en-in-0.4"
+    for tier in VOSK_MODEL_TIERS:
+        assert spec_for("hi", tier)["directory"] == "vosk-model-small-hi-0.22"
+    with pytest.raises(VoskModelUnavailableError):
+        spec_for("fr")
+
+
+def test_resolve_model_dir_falls_back_to_small(tmp_path):
+    """When the preferred tier is not provisioned but the small model is,
+    the registry falls back to small instead of raising."""
+    small = tmp_path / "vosk-model-small-en-us-0.15"
+    (small / "conf").mkdir(parents=True)
+    registry = VoskModelRegistry(models_dir=str(tmp_path))
+    # Default tier (lgraph) is absent -> resolves to the small dir.
+    assert registry.resolve_model_dir("en") == small
+
+
+def test_resolve_model_dir_falls_back_to_default_tier(tmp_path, monkeypatch):
+    """A runtime tier that was never provisioned degrades to the default
+    tier's model (what images are baked with) instead of failing voice."""
+    default_dir = tmp_path / spec_for("en", DEFAULT_MODEL_TIER)["directory"]
+    (default_dir / "conf").mkdir(parents=True)
+    monkeypatch.setenv("AMAP_VOSK_MODEL_TIER", "indian-large")
+    registry = VoskModelRegistry(models_dir=str(tmp_path))
+    assert registry.resolve_model_dir("en") == default_dir
+
+
+def test_resolve_model_dir_uses_any_provisioned_tier(tmp_path):
+    """Image baked with a non-default tier (VOSK_TIER build-arg) whose value
+    did not reach the container env: resolution finds the model that IS
+    present instead of failing voice."""
+    en_in = tmp_path / "vosk-model-en-in-0.5"
+    (en_in / "conf").mkdir(parents=True)
+    registry = VoskModelRegistry(models_dir=str(tmp_path))
+    assert registry.resolve_model_dir("en") == en_in
+
+
+def test_resolve_model_dir_rejects_unknown_language(tmp_path):
+    registry = VoskModelRegistry(models_dir=str(tmp_path))
+    with pytest.raises(VoskModelUnavailableError, match="Unsupported language"):
+        registry.resolve_model_dir("fr")
+
+
+def test_resolve_model_dir_raises_when_nothing_exists(tmp_path):
+    registry = VoskModelRegistry(models_dir=str(tmp_path))
+    with pytest.raises(VoskModelUnavailableError, match="prefetch_vosk_models"):
+        registry.resolve_model_dir("en")
 
 
 @pytest.mark.skipif(not MODELS_PRESENT, reason="Vosk models not provisioned")

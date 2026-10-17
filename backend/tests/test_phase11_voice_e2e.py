@@ -21,15 +21,18 @@ from starlette.testclient import TestClient
 
 from app.config import get_settings
 from app.main import app
-from services.vosk_stt_service import VOSK_MODEL_SPECS
+from services.vosk_stt_service import SUPPORTED_LANGUAGES, VOSK_MODEL_SPECS
 
 ORG = "9a61e05d-7a32-4112-9c17-1833d7b42f65"
 ALEX = "d0000000-0000-0000-0000-000000000001"
 DEFAULT_PASSWORD = "SecurePassword123!"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_PRESENT = all(
-    (REPO_ROOT / "backend" / ".vosk_cache" / spec["directory"]).is_dir()
-    for spec in VOSK_MODEL_SPECS.values()
+    any(
+        (REPO_ROOT / "backend" / ".vosk_cache" / spec["directory"]).is_dir()
+        for spec in VOSK_MODEL_SPECS[lang].values()
+    )
+    for lang in SUPPORTED_LANGUAGES
 )
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "voice"
 
