@@ -34,3 +34,9 @@ backend/data/
 
 # Local speech-to-text model cache (prefetched at setup, never committed)
 backend/.vosk_cache/
+
+# Local compose overrides (per-machine stacks)
+docker-compose.override.yml
+
+# Logs
+*.log
