@@ -15,7 +15,7 @@ Resolution precedence (highest wins):
 Also exposes worker interaction calibration settings persisted alongside the
 gesture map in worker_personalizations.personalization_data:
   dwell_time_ms, click_debounce_ms, cursor_sensitivity, scroll_sensitivity,
-  smoothing_alpha, jitter_threshold, handedness, enabled_gestures.
+  smoothing_alpha, adaptive_smoothing, max_smoothing_alpha, jitter_threshold, handedness, enabled_gestures.
 
 Nothing here is localStorage-based: every override lives in PostgreSQL and
 survives refreshes, re-login, and backend restarts.
@@ -52,6 +52,8 @@ DEFAULT_CALIBRATION: Dict[str, Any] = {
     "scroll_sensitivity": 220,
     "scroll_throttle_ms": 180,
     "smoothing_alpha": 0.35,
+    "adaptive_smoothing": 1,
+    "max_smoothing_alpha": 0.5,
     "jitter_threshold": 0.012,
     "handedness": "Either",
     "enabled_gestures": {

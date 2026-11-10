@@ -30,6 +30,7 @@ const CALIBRATION_FIELDS: { key: string; label: string; min: number; max: number
   { key: 'cursor_sensitivity', label: 'Pointer sensitivity', min: 0.8, max: 3, step: 0.1, unit: 'x' },
   { key: 'scroll_sensitivity', label: 'Scroll sensitivity', min: 60, max: 600, step: 20, unit: 'px' },
   { key: 'smoothing_alpha', label: 'Smoothing (lower = smoother)', min: 0.1, max: 1, step: 0.05 },
+  { key: 'max_smoothing_alpha', label: 'Fast-tracking response', min: 0.3, max: 0.95, step: 0.05 },
   { key: 'jitter_threshold', label: 'Jitter threshold', min: 0.004, max: 0.05, step: 0.002 },
 ];
 

@@ -9,8 +9,11 @@
  *   -> typed action events -> UI action executor + backend persistence
  *
  * Responsibilities:
- *  - Virtual pointer: index-fingertip driven, smoothed (EMA), jitter-deadband,
- *    configurable sensitivity, camera-mirrored to user frame of reference.
+ *  - Virtual pointer: index-fingertip driven, speed-adaptive EMA smoothing
+ *    (heavy when the hand is steady for accurate aiming/dwell, light when
+ *    moving fast for snappy tracking; frame-rate compensated so a lagging
+ *    camera feels identical), jitter-deadband, configurable sensitivity,
+ *    camera-mirrored to user frame of reference.
  *  - Pinch click: quick pinch = left click (debounced), sustained pinch =
  *    select, pinch + movement = drag (continuous, not isolated events).
  *  - Two-finger: right click when released still, continuous scroll while moving.
@@ -67,6 +70,12 @@ export interface EngineCalibration {
   scrollThrottleMs: number;
   /** EMA smoothing factor for the pointer (0..1, lower = smoother). */
   smoothingAlpha: number;
+  /** Speed-adaptive smoothing: steady hand -> twice the smoothing (steady
+   *  aim for dwell/pinch accuracy), fast hand -> up to maxSmoothingAlpha
+   *  (responsive tracking). Compensated for camera frame rate. Default true. */
+  adaptiveSmoothing: boolean;
+  /** EMA alpha ceiling when the hand moves fast (0..1, higher = snappier). */
+  maxSmoothingAlpha: number;
   /** Normalized pointer movement below this is ignored (jitter deadband). */
   jitterThreshold: number;
   /** Preferred hand: 'Left' | 'Right' | 'Either'. */
@@ -94,6 +103,8 @@ export const DEFAULT_ENGINE_CALIBRATION: EngineCalibration = {
   scrollSensitivity: 220,
   scrollThrottleMs: 180,
   smoothingAlpha: 0.35,
+  adaptiveSmoothing: true,
+  maxSmoothingAlpha: 0.5,
   jitterThreshold: 0.012,
   handedness: 'Either',
   enabledGestures: {
@@ -137,12 +148,17 @@ export function engineCalibrationFromBackend(
     ['scrollSensitivity', 'scroll_sensitivity'],
     ['scrollThrottleMs', 'scroll_throttle_ms'],
     ['smoothingAlpha', 'smoothing_alpha'],
+    ['maxSmoothingAlpha', 'max_smoothing_alpha'],
     ['jitterThreshold', 'jitter_threshold'],
   ];
   const patch: Partial<EngineCalibration> = {};
   for (const [camel, snake] of fields) {
     const v = num(raw[snake]);
     if (v !== undefined) (patch as Record<string, any>)[camel] = v;
+  }
+  if (raw.adaptive_smoothing !== undefined) {
+    patch.adaptiveSmoothing =
+      raw.adaptive_smoothing === true || raw.adaptive_smoothing === 1 || raw.adaptive_smoothing === 'true';
   }
   if (raw.handedness === 'Left' || raw.handedness === 'Right' || raw.handedness === 'Either') {
     patch.handedness = raw.handedness;
@@ -172,6 +188,8 @@ export function engineCalibrationToBackend(
   if (cal.scrollSensitivity !== undefined) out.scroll_sensitivity = cal.scrollSensitivity;
   if (cal.scrollThrottleMs !== undefined) out.scroll_throttle_ms = cal.scrollThrottleMs;
   if (cal.smoothingAlpha !== undefined) out.smoothing_alpha = cal.smoothingAlpha;
+  if (cal.maxSmoothingAlpha !== undefined) out.max_smoothing_alpha = cal.maxSmoothingAlpha;
+  if (cal.adaptiveSmoothing !== undefined) out.adaptive_smoothing = cal.adaptiveSmoothing ? 1 : 0;
   if (cal.jitterThreshold !== undefined) out.jitter_threshold = cal.jitterThreshold;
   if (cal.handedness !== undefined) out.handedness = cal.handedness;
   if (cal.enabledGestures !== undefined) out.enabled_gestures = { ...cal.enabledGestures };
@@ -220,6 +238,18 @@ export type EngineEvent =
   | { type: 'feedback'; level: 'info' | 'warn' | 'error'; message: string };
 
 // ---------------------------------------------------------------------------
+// Adaptive smoothing constants
+// ---------------------------------------------------------------------------
+
+/** Hand speed (normalized units/second, post-sensitivity target space) at
+ *  which adaptive smoothing reaches its fast (snappy) alpha ceiling. */
+const ADAPTIVE_SPEED_SATURATION = 2.5;
+/** Reference camera frame period used for frame-rate compensation (30 fps).
+ *  Long frames apply proportionally more convergence so pointer behaviour
+ *  per second stays identical when the camera drops frames on a loaded host. */
+const BASE_FRAME_SEC = 1 / 30;
+
+// ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
@@ -245,6 +275,8 @@ export class WorkerGestureEngine {
   /** Smoothed pointer position in normalized user-frame coordinates [0..1]. */
   private pointerNorm: { x: number; y: number } | null = null;
   private hasPointer = false;
+  /** Last raw (pre-smoothing) target position, for adaptive speed estimation. */
+  private lastTargetNorm: { x: number; y: number } | null = null;
 
   /** Timestamps of the last processed frame. */
   private lastFrameTs = 0;
@@ -499,12 +531,33 @@ export class WorkerGestureEngine {
       this.pointerNorm = { x: targetX, y: targetY };
       this.hasPointer = true;
     } else {
-      const alpha = clamp01(this.calibration.smoothingAlpha);
+      const baseAlpha = clamp01(this.calibration.smoothingAlpha);
+      let alpha = baseAlpha;
+      if (this.calibration.adaptiveSmoothing) {
+        // Speed-adaptive smoothing (one-euro-filter style): a steady hand
+        // gets twice the base smoothing (rock-solid aim while dwelling or
+        // pinching); a fast hand gets up to maxSmoothingAlpha (snappy, low
+        // lag while moving across the screen).
+        const dtSec = Math.min(0.25, Math.max(0.001, dt / 1000));
+        const last = this.lastTargetNorm;
+        const rawSpeed = last
+          ? Math.hypot(targetX - last.x, targetY - last.y) / dtSec
+          : ADAPTIVE_SPEED_SATURATION;
+        const steadyAlpha = baseAlpha * 0.5;
+        const fastAlpha = Math.max(baseAlpha, clamp01(this.calibration.maxSmoothingAlpha));
+        const speedT = Math.min(1, rawSpeed / ADAPTIVE_SPEED_SATURATION);
+        alpha = steadyAlpha + (fastAlpha - steadyAlpha) * speedT;
+        // Frame-rate compensation: identical per-second behaviour whether the
+        // camera delivers 30 fps or drops to 10 fps on a loaded machine.
+        const frames = Math.min(3, Math.max(0.5, dtSec / BASE_FRAME_SEC));
+        alpha = 1 - Math.pow(1 - alpha, frames);
+      }
       this.pointerNorm = {
         x: this.pointerNorm!.x * (1 - alpha) + targetX * alpha,
         y: this.pointerNorm!.y * (1 - alpha) + targetY * alpha,
       };
     }
+    this.lastTargetNorm = { x: targetX, y: targetY };
 
     const pointer = this.toPixels(this.pointerNorm);
 

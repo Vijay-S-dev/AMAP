@@ -330,6 +330,105 @@ test('updateCalibration changes pointer sensitivity live', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. Speed-adaptive pointer smoothing (accuracy + max responsiveness)
+// ---------------------------------------------------------------------------
+console.log('\n— adaptive pointer smoothing —');
+
+test('adaptiveSmoothing:false reproduces the legacy fixed EMA exactly', () => {
+  const engine = newEngine();
+  engine.updateCalibration({ adaptiveSmoothing: false });
+  engine.processFrame([HANDS.pointing()], ['Right'], 1000);
+  const before = engine.getPointer()!.x;
+  engine.processFrame([buildHand({ pointing: true }, { x: -0.2, y: 0 })], ['Right'], 1060);
+  const p = engine.getPointer()!;
+  // legacy fixed EMA: before + alpha * (0.2 * 1.4 * 1280) = before + 125.44
+  const expected = before + 0.35 * 0.2 * 1.4 * 1280;
+  // toPixels rounds to whole pixels, so allow the 1px presentation rounding.
+  assert(Math.abs(p.x - expected) <= 1.0, `legacy EMA expected ~${expected.toFixed(2)}, got ${p.x}`);
+});
+
+test('adaptive smoothing suppresses steady-hand tremor better than fixed EMA', () => {
+  const run = (adaptive: boolean): number => {
+    const engine = newEngine();
+    if (!adaptive) engine.updateCalibration({ adaptiveSmoothing: false });
+    let ts = 1000;
+    engine.processFrame([HANDS.pointing()], ['Right'], ts);
+    const positions: number[] = [];
+    for (let i = 1; i <= 24; i++) {
+      ts += 33;
+      const jitter = i % 2 === 0 ? 0.004 : -0.004;
+      engine.processFrame([buildHand({ pointing: true }, { x: jitter, y: 0 })], ['Right'], ts);
+      // Skip the initial convergence transient: compare steady-state tremor.
+      if (i >= 8) positions.push(engine.getPointer()!.x);
+    }
+    return Math.max(...positions) - Math.min(...positions);
+  };
+  const fixedExcursion = run(false);
+  const adaptiveExcursion = run(true);
+  assert(
+    adaptiveExcursion < fixedExcursion * 0.75,
+    `adaptive excursion ${adaptiveExcursion.toFixed(2)}px should be < 75% of fixed ${fixedExcursion.toFixed(2)}px`
+  );
+});
+
+test('adaptive smoothing responds to a fast jump far faster than fixed EMA', () => {
+  const run = (adaptive: boolean): number => {
+    const engine = newEngine();
+    if (!adaptive) engine.updateCalibration({ adaptiveSmoothing: false });
+    engine.processFrame([HANDS.pointing()], ['Right'], 1000);
+    const before = engine.getPointer()!.x;
+    engine.processFrame([buildHand({ pointing: true }, { x: -0.25, y: 0 })], ['Right'], 1050);
+    return engine.getPointer()!.x - before; // px covered in a single frame
+  };
+  const fixedCovered = run(false);
+  const adaptiveCovered = run(true);
+  // Full jump = 0.25 * 1.4 * 1280 = 448 px. Fixed EMA(0.35) covers ~157 px in
+  // one frame; adaptive (fast alpha, dt-compensated ~0.65) covers ~290 px.
+  assert(
+    adaptiveCovered >= fixedCovered * 1.5,
+    `adaptive covered ${adaptiveCovered.toFixed(1)}px in one frame, expected >= 1.5x fixed (${fixedCovered.toFixed(1)}px)`
+  );
+});
+
+test('adaptive smoothing is frame-rate independent (15 fps behaves like 30 fps)', () => {
+  const run = (frameMs: number): number => {
+    const engine = newEngine();
+    let ts = 1000;
+    engine.processFrame([HANDS.pointing()], ['Right'], ts);
+    const frames = Math.round(500 / frameMs);
+    for (let i = 1; i <= frames; i++) {
+      ts += frameMs;
+      // Same physical hand path over the same 500 ms: 0.03 norm per 50 ms.
+      const tMs = i * frameMs;
+      engine.processFrame(
+        [buildHand({ pointing: true }, { x: -0.03 * (tMs / 50), y: 0 })],
+        ['Right'],
+        ts
+      );
+    }
+    return engine.getPointer()!.x;
+  };
+  const at30 = run(33);
+  const at15 = run(50);
+  assert(
+    Math.abs(at30 - at15) < 40,
+    `pointer after 500ms of motion should match across frame rates (30fps: ${at30.toFixed(1)}px, 15fps: ${at15.toFixed(1)}px)`
+  );
+});
+
+test('calibration roundtrip carries adaptive smoothing settings', () => {
+  const out = engineCalibrationToBackend({ adaptiveSmoothing: false, maxSmoothingAlpha: 0.65 });
+  assertEqual(out.adaptive_smoothing, 0, 'adaptive_smoothing serialized as 0');
+  assertEqual(out.max_smoothing_alpha, 0.65, 'max_smoothing_alpha serialized');
+  const back = engineCalibrationFromBackend(out);
+  assertEqual(back.adaptiveSmoothing, false, 'adaptiveSmoothing parsed back');
+  assertEqual(back.maxSmoothingAlpha, 0.65, 'maxSmoothingAlpha parsed back');
+  // Numeric backend default (1) enables adaptive smoothing.
+  const on = engineCalibrationFromBackend({ adaptive_smoothing: 1, max_smoothing_alpha: 0.5 });
+  assertEqual(on.adaptiveSmoothing, true, 'adaptive_smoothing=1 enables adaptive mode');
+});
+
+// ---------------------------------------------------------------------------
 // 3. Pinch lifecycle: click, double click, debounce, select, drag
 // ---------------------------------------------------------------------------
 
@@ -492,8 +591,10 @@ test('two-finger movement emits throttled scroll events', () => {
     assert(scroll.amountPx >= 40, 'scroll amount clamped to a minimum of 40px');
     assertEqual(scroll.source, 'two_finger');
   }
-  // Within the throttle window (180ms) no second scroll is emitted
-  const more = engine.processFrame([buildHand({ twoFinger: true }, { x: 0, y: 0.12 })], ['Right'], 1600);
+  // Within the throttle window (180ms) no second scroll is emitted. The
+  // probe frame is 90ms after the last frame of the ramp, so it is inside
+  // the window regardless of which exact frame first crossed the threshold.
+  const more = engine.processFrame([buildHand({ twoFinger: true }, { x: 0, y: 0.12 })], ['Right'], 1490);
   assertEqual(countBy(more, (e) => e.type === 'scroll'), 0, 'scroll throttle must suppress rapid repeats');
   // After the throttle window it scrolls again
   const later = engine.processFrame([buildHand({ twoFinger: true }, { x: 0, y: 0.14 })], ['Right'], 1850);
