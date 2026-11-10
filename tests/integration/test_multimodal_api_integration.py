@@ -50,6 +50,11 @@ def client(mock_worker_context):
 def test_multimodal_spatial_voice_integration(client):
     """
     Test combining spatial gesture pointer target with voice confirmation command.
+
+    The pointing gesture must carry spatial context (pointer target) so the
+    fusion engine treats it as a spatial carrier; the voice command supplies
+    the operational action. Expected result: complementary fusion binding
+    "confirm_action" onto the pointed target (see multimodal_service step 7).
     """
     resp = client.post(
         "/api/v1/multimodal/fuse",
@@ -60,6 +65,11 @@ def test_multimodal_spatial_voice_integration(client):
                     "raw_intent": "pointing",
                     "confidence": 0.88,
                     "timestamp_ms": 1000,
+                    "context_data": {
+                        "target_part_id": "7f1c9e2a-2b7d-4c3e-9a10-5e8d6f4b3c21",
+                        "spatial_x": 0.42,
+                        "spatial_y": 0.61,
+                    },
                 },
                 {
                     "mode": "voice",
@@ -75,6 +85,11 @@ def test_multimodal_spatial_voice_integration(client):
     data = resp.json()
     assert data["fused_action"] == "confirm_action"
     assert data["validation_status"] == "valid"
+    assert data["fusion_strategy"] == "complementary"
+    assert data["target_context"]["target_part_id"] == "7f1c9e2a-2b7d-4c3e-9a10-5e8d6f4b3c21"
+    # contributing_modes is built from a set in the service -> order is not
+    # guaranteed across interpreter runs; compare order-insensitively.
+    assert sorted(data["contributing_modes"]) == ["gesture", "voice"]
 
 
 def test_multimodal_single_gesture_frame_processing(client):

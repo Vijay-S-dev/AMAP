@@ -1,0 +1,35 @@
+# ====================================================================
+# AMAP pre-commit hooks — first line of defense before code reaches CI.
+#
+# Install once per clone (requires: pip install pre-commit):
+#     pre-commit install
+#
+# Then every `git commit` runs these fast checks on staged files only.
+# They are deliberately minimal: whitespace/structure hygiene plus a
+# Python syntax check. The full gates (migrations, seed, 850+ tests,
+# 85% coverage floor, frontend build) run in CI —
+# see docs/TESTING.md for the complete testing strategy.
+#
+# Run manually on all files (e.g. after applying a patch):
+#     pre-commit run --all-files
+# ====================================================================
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      # Backend syntax gate — catches syntax errors in staged .py files
+      # before they can break CI collection. Uses the ambient python.
+      - id: python-syntax
+        name: python syntax check (compileall)
+        entry: python -m compileall -q
+        language: system
+        types: [python]

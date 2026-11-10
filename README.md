@@ -2,7 +2,7 @@
 > **Enterprise-Grade Cyber-Physical Manufacturing Interface for Workers with Physical and Cognitive Diversities**
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![Backend Tests](https://img.shields.io/badge/tests-379%20passed-success)]()
+[![Backend Tests](https://img.shields.io/badge/tests-876%20passed-success)]()
 [![WCAG](https://img.shields.io/badge/WCAG-2.1%20AA%20Compliant-blue)]()
 [![Security](https://img.shields.io/badge/security%20audit-20%2F20%20passed-purple)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
@@ -32,7 +32,7 @@ AMAP/
 │   ├── routes/               # Modular REST endpoints (/auth, /sessions, /tasks, /multimodal, etc.)
 │   ├── services/             # Pure domain business logic & multi-signal adaptation engines
 │   ├── utils/                # PBKDF2 cryptography, Supabase RLS context, tenant scoping
-│   └── tests/                # 379 Comprehensive automated unit, integration, and security tests
+│   └── tests/                # 876 automated unit, integration, and security tests (+24 Vosk model-gated STT tests that run in CI)
 ├── frontend/                 # Next.js 14+ / React 18+ Accessible Workstation Studio
 │   ├── app/                  # App Router (/worker, /organization, /admin, /)
 │   ├── worker/               # Multimodal HUD, Workflow Viewer, Accessible Modals, Dwell Timers
@@ -92,7 +92,7 @@ pip install -r requirements.txt
 python -m compileall app repositories routes middleware utils models services tests
 pytest -q
 ```
-*Expected output: `379 passed in ~70s`.*
+*Expected output: `876 passed, 24 skipped in ~85s` (the 24 skips are real-STT tests that need prefetched Vosk models — CI always runs them; see `docs/TESTING.md`).*
 
 Start FastAPI dev server:
 ```bash
@@ -107,6 +107,28 @@ npm install
 npm run dev
 ```
 Open `http://localhost:3000` to launch the Hybrid Control Interface Multimodal Suite.
+
+---
+
+## 🧪 Testing & CI
+
+Every push and pull request runs the full quality gate in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+
+1. Migrations + seed on a fresh PostgreSQL 16
+2. Complete backend suite with prefetched Vosk models (real-STT tests must
+   not skip) and a **coverage gate of 85%** (measured baseline: 90.5%)
+3. Platform suites (`tests/e2e`, `tests/integration`, `tests/security`)
+4. Critical E2E over real HTTP with PostgreSQL assertions
+5. Frontend typecheck, lint, 142 unit tests, and production build
+6. `docker compose` build + up + readiness + login/fusion/execute smoke
+
+Locally: `pytest -q` in `backend/`, `npm run test:engine` in `frontend/`,
+or everything at once via `python scripts/run_all_tests.py`. Full details —
+test pyramid, coverage policy, and the skipped-test analysis — live in
+[`docs/TESTING.md`](docs/TESTING.md). Optional pre-commit hooks are defined
+in [`.pre-commit-config.yaml`](.pre-commit-config.yaml)
+(`pip install pre-commit && pre-commit install`).
 
 ---
 

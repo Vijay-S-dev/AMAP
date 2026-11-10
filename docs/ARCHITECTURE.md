@@ -46,3 +46,29 @@ Each tenant organization is completely isolated:
 - PostgreSQL session context `app.current_organization_id` is set at the start of each transaction.
 - Row-Level Security policies filter every table (`organizations`, `users`, `worker_profiles`, `work_sessions`, `tasks`, `workflow_steps`, `audit_events`) so that cross-tenant queries return zero records or raise `403 Forbidden`.
 - Immutable Audit Event logs enforce `REVOKE UPDATE, DELETE ON audit_events FROM ALL`.
+
+---
+
+## 5. Quality & Test Architecture
+
+Quality is enforced by a unit-first test pyramid (see `docs/TESTING.md` for
+the full guide):
+
+- **Unit layer (~850 backend tests):** services, repositories, Pydantic
+  models, route HTTP contracts, and configuration validation — all mocked
+  or in-memory, deterministic, seconds to run. New code lands here first.
+- **Model-gated voice layer (24 tests):** real-STT tests over the Vosk
+  pipeline; they skip locally when models are not provisioned and always
+  run in CI (prefetched + cached).
+- **Platform layer:** root `tests/` (e2e, integration, security) over the
+  in-process API with a migrated + seeded database, plus a critical E2E
+  flow and a `docker compose` smoke test in CI.
+- **Coverage as a diagnostic, not a target:** CI enforces an 85% ratchet
+  (policy floor 80%, measured baseline ~90%) so risk surfaces early
+  without incentivizing vacuous tests.
+
+The same invariant that governs runtime behavior —
+*Recognition ≠ Intent ≠ Authorization ≠ Execution* — maps onto the test
+layers: recognition pipelines are tested with real models, intent fusion
+with pure-function unit tests, authorization with RBAC/tenant-isolation
+suites, and execution with the safety-interlock and E2E flows.

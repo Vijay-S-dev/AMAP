@@ -5,7 +5,10 @@
 #   2. seed
 #   3. complete backend test suite (zero failures / zero collection
 #      errors / zero skips — the Vosk models are prefetched so the
-#      real STT tests execute)
+#      real STT tests execute) with a coverage gate: total coverage
+#      must stay >= 85% (policy floor 80%, measured baseline 90%)
+#   3b. platform suites at the repo root (tests/e2e, tests/integration,
+#      tests/security) over the migrated + seeded database
 #   4. frontend: npm ci + typecheck + lint + unit tests (gesture
 #      engine, voice worklet, route-access policy) + production build
 #   5. critical end-to-end over real HTTP + PostgreSQL assertions
@@ -73,9 +76,33 @@ jobs:
       - name: Prefetch local Vosk models (EN + HI)
         run: python scripts/prefetch_vosk_models.py
 
-      - name: Backend test suite
+      - name: Backend test suite (coverage gate 85%)
         working-directory: backend
-        run: python -m pytest -q
+        run: |
+          set -o pipefail
+          if python -m pytest -q \
+            --cov=app --cov=middleware --cov=models --cov=repositories \
+            --cov=routes --cov=services --cov=utils \
+            --cov-report=term-missing --cov-report=xml \
+            --cov-fail-under=85 2>&1 | tee /tmp/pytest-cov.log; then
+            {
+              echo "### Backend coverage"
+              echo '```'
+              grep -E "^(TOTAL|[a-z].*py)$" /tmp/pytest-cov.log | tail -25
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Backend test suite: FAILED (last 80 lines)"
+              echo '```'
+              tail -80 /tmp/pytest-cov.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Platform suites (e2e + integration + security at repo root)
+        run: python -m pytest tests/e2e tests/integration tests/security -q
 
       - name: Critical E2E over real HTTP + PostgreSQL
         run: |
