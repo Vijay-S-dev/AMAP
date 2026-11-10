@@ -6,7 +6,7 @@
 #
 # Services
 #   postgres   PostgreSQL 16 with healthcheck
-#   migrate    runs database/migrations 001..051, then database/seed
+#   migrate    runs database/migrations 001..053, then database/seed
 #              (idempotent; completes successfully before backend starts)
 #   backend    FastAPI + Vosk streaming voice pipeline, gesture and
 #              multimodal APIs; local model directory bind-mounted from

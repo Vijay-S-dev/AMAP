@@ -67,7 +67,7 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r backend/requirements.txt
 
-      - name: Apply migrations (001..051)
+      - name: Apply migrations (001..053)
         run: python scripts/migrate.py
 
       - name: Seed
@@ -164,6 +164,9 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+
+      - name: Validate Docker Hub short description (100 char limit)
+        run: python scripts/validate_docker_description.py
 
       - name: Prefetch local Vosk models
         run: python scripts/prefetch_vosk_models.py
