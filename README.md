@@ -170,7 +170,7 @@ Run the test suite and start the dev server:
 python -m compileall app repositories routes middleware utils models services tests
 pytest -q
 ```
-*Expected output: `876 passed, 24 skipped in ~85s` (the 24 skips are real-STT tests that need prefetched Vosk models — CI always runs them; see [`docs/TESTING.md`](docs/TESTING.md)).*
+*Expected output: `876 passed, 24 skipped in ~85s` (the 24 skips are real-STT tests that need prefetched Vosk models — CI always runs them; see [`docs/TESTING_AND_RELIABILITY.md`](docs/TESTING_AND_RELIABILITY.md)).*
 
 ```bash
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
@@ -382,7 +382,7 @@ Every push and pull request runs the full quality gate in
 Locally: `pytest -q` in `backend/`, `npm run test:engine` in `frontend/`,
 or everything at once via `python scripts/run_all_tests.py`. Full details —
 test pyramid, coverage policy, and the skipped-test analysis — live in
-[`docs/TESTING.md`](docs/TESTING.md). Optional pre-commit hooks are defined
+[`docs/TESTING_AND_RELIABILITY.md`](docs/TESTING_AND_RELIABILITY.md). Optional pre-commit hooks are defined
 in [`.pre-commit-config.yaml`](.pre-commit-config.yaml)
 (`pip install pre-commit && pre-commit install`).
 
@@ -413,7 +413,8 @@ All 20 mission-critical security criteria are covered with automated tests in `b
 - [x] **19. Supabase Row-Level Security:** Database-level policy enforcement
 - [x] **20. Temporal Dwell Safety:** Tremor smoothing and continuous hold thresholds
 
-Reporting a vulnerability: see [`docs/SECURITY.md`](docs/SECURITY.md).
+Reporting a vulnerability: see [`SECURITY.md`](SECURITY.md) — practices
+and policy details in [`docs/SECURITY_AND_PRIVACY.md`](docs/SECURITY_AND_PRIVACY.md).
 
 ---
 
@@ -457,6 +458,8 @@ Priorities and reasoning are maintained in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Contributing
 
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full guide. In brief:
+
 1. Fork or branch from `main`; keep changes focused.
 2. Install the optional hooks: `pip install pre-commit && pre-commit install`.
 3. Run the gates before opening a PR — at minimum
@@ -465,7 +468,8 @@ Priorities and reasoning are maintained in [`docs/ROADMAP.md`](docs/ROADMAP.md).
    (tests + 85% coverage floor + E2E + compose smoke).
 
 Architecture decisions are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md);
-please propose significant changes there first.
+please propose significant changes there first. Notable changes are logged
+in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 

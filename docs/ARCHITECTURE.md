@@ -51,7 +51,7 @@ Each tenant organization is completely isolated:
 
 ## 5. Quality & Test Architecture
 
-Quality is enforced by a unit-first test pyramid (see `docs/TESTING.md` for
+Quality is enforced by a unit-first test pyramid (see `docs/TESTING_AND_RELIABILITY.md` for
 the full guide):
 
 - **Unit layer (~850 backend tests):** services, repositories, Pydantic

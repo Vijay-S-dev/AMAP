@@ -1,7 +1,8 @@
-# Testing Guide
+# Testing & Reliability Guide
 
-How to run every test suite in this repository, the coverage policy, and
-the analysis of every skipped test.
+How to run every test suite in this repository, the coverage policy, the
+analysis of every skipped test, and the reliability strategy that keeps the
+suite trustworthy.
 
 **Current baseline (2026-09, post org-refactor):** 876 backend tests passed
 + 24 model-gated skips (run in CI), 90.5% total coverage, ~83 s wall clock;
@@ -113,6 +114,32 @@ Remediation status: **none required.**
 If you ever see skips beyond these 24 (or skips whose reason does not name
 an environment precondition), treat it as a test bug and fix or remove the
 test.
+
+---
+
+## Reliability strategy
+
+The rules that keep the suite trustworthy over time:
+
+- **Determinism policy.** Tests must not depend on dict/set iteration
+  order, wall-clock timing, or undeclared environment state. When a service
+  returns order-unstable data (e.g. `contributing_modes`, built from a
+  set), tests assert order-insensitively — verified across multiple
+  `PYTHONHASHSEED` values before merging.
+- **No undocumented skips.** Every skip is environment-gated and its reason
+  string names the precondition (see the analysis above). A skip without a
+  documented environment reason is a test bug.
+- **CI is the source of truth for environment-dependent tests.** Tests that
+  need expensive local resources (Vosk models) always run in CI via
+  prefetch + cache, so local skips can never mask a regression on main.
+- **Failure handling.** Test failures block commits and merges (the CI
+  gate). Flaky tests are fixed or quarantined with a written reason —
+  never silently re-run until green.
+- **Timing-sensitive suites stay out of CI.** `tests/performance` runs only
+  on idle local hardware (`scripts/run_all_tests.py`) because shared CI
+  runners produce noisy timings that would erode trust in a red build.
+- **Coverage ratchet.** 80% policy floor, 85% CI gate, 90.5% measured
+  baseline — risk stays visible without incentivizing vacuous tests.
 
 ---
 

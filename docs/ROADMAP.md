@@ -8,7 +8,7 @@ commitment dates. Last reviewed: 2026-09.
 
 - Repository organization refactor (docs, archive, obsolete-file removal) — see [`REFACTORING_PLAN.md`](REFACTORING_PLAN.md)
 - Test-suite hardening: coverage gate at 85% (baseline 90.5%), platform
-  suites in CI, 54 new contract tests, skipped-test analysis — see [`TESTING.md`](TESTING.md)
+  suites in CI, 54 new contract tests, skipped-test analysis — see [`TESTING_AND_RELIABILITY.md`](TESTING_AND_RELIABILITY.md)
 - Streaming voice pipeline (Vosk, EN + HI) with configurable model tiers
 - Worker gesture-action personalization resolved from PostgreSQL
   (personal override → org preset → canonical default)
@@ -19,7 +19,7 @@ commitment dates. Last reviewed: 2026-09.
 1. **Supervisor-service coverage push.** `services/supervisor_service.py`
    sits at 72% — the remaining blocks are multi-repository operational
    flows (task reassignment, escalation, report generators). Documented in
-   [`TESTING.md`](TESTING.md).
+   [`TESTING_AND_RELIABILITY.md`](TESTING_AND_RELIABILITY.md).
 2. **Versioning policy and tagged releases.** Adds `docs/VERSIONING.md`
    when a release cadence starts (follow-up from the org refactor); enables
    live CI and version badges in the README.

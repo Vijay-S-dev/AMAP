@@ -113,4 +113,27 @@ or renamed file.
 ## 8. Follow-up Candidates (out of scope here)
 
 1. Wire `scripts/run_all_tests.py` (platform suites) into CI (ADR-0005).
+   → **Done (test-suite patch, 2026-09):** `tests/e2e`, `tests/integration`,
+   and `tests/security` now run as a CI step; `tests/performance` stays
+   local-only (timing noise on shared runners — see
+   [`TESTING_AND_RELIABILITY.md`](TESTING_AND_RELIABILITY.md)).
 2. Consider `docs/VERSIONING.md` when a release cadence starts.
+   → Still open; tracked in [`ROADMAP.md`](ROADMAP.md).
+
+## 9. Follow-on: Documentation Standardization (2026-09)
+
+Executed under the approval gate; recorded as ADR-0008. No deletions, no
+archives — content was preserved through every rename.
+
+| Action | Detail | Status |
+|---|---|---|
+| Rename | `docs/TESTING.md` → `docs/TESTING_AND_RELIABILITY.md` (+ reliability-strategy section) | ✅ |
+| Rename | `docs/SECURITY.md` → `docs/SECURITY_AND_PRIVACY.md` (+ privacy & data handling, AI safety) | ✅ |
+| Deviation | `database/seed/DEMOS.md` kept as-is — `database/seed/README.md` already exists (untracked seed-credentials document), so the rename would collide; accepted, recorded in ADR-0008 | ✅ |
+| Create | `docs/AI_INTERACTION_GUIDE.md`, `docs/IMPROVEMENT_AREAS.md` (required-set completion) | ✅ |
+| Create | Root `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`, `SECURITY.md` | ✅ |
+| Update | `docs/README.md` → standard-set index (9 required) + declared extensions; all cross-references to renamed files updated (`README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, this file) | ✅ |
+
+Verification: required-file existence check passes; every relative link in
+the changed documents resolves; `git am` on a byte-identical replica of
+the stacked patch sequence applies cleanly.

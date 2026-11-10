@@ -76,3 +76,36 @@ on case-insensitive filesystems (Windows NTFS, macOS default): the
 destination path "already exists" because it is the same file. Renaming
 would require every Windows contributor to perform manual steps, for a purely
 cosmetic gain. The file keeps its historical name.
+
+## ADR-0008 — Documentation standardization contract (2026-09)
+
+**Context:** The documentation had grown organically: a strong root README
+and a mixed `docs/` set, but no index, no agent rules, no changelog, and
+two near-miss names (`SECURITY.md`, `TESTING.md`) against the adopted
+standard set.
+
+**Decision:** Adopt a documentation contract. Root keeps exactly:
+`README.md`, `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
+`CHANGELOG.md`, `SECURITY.md`. `docs/` holds the 9-file standard set
+(`README`, `PROJECT_OVERVIEW`, `ARCHITECTURE`, `AI_INTERACTION_GUIDE`,
+`REFACTORING_PLAN`, `TESTING_AND_RELIABILITY`, `IMPROVEMENT_AREAS`,
+`SECURITY_AND_PRIVACY`, `ROADMAP`) plus **declared extensions**: any
+additional file is allowed if and only if it is listed with a one-line
+purpose in the `docs/README.md` index. `VERSIONING.md` is created only
+when a release cadence starts. Superseded material goes to
+`docs/archive/docs-backup-YYYY-MM-DD/`. Subdirectories use `README.md`
+(not other ALL-CAPS names) for local documentation. **Accepted
+deviation:** `database/seed/DEMOS.md` keeps its name — the `README.md`
+name in that directory is already occupied by an existing (uncommitted)
+seed-credentials document, so the rename would collide on the primary
+development machine.
+
+**Rationale:** The standard set makes maintainability visible (what exists,
+what is missing, what each doc's update trigger is) while declared
+extensions keep the project's substantial specifications
+(`MASTER_SPEC.md`, `API_CONTRACT.md`, `AI.md`, `VOICE_ARCHITECTURE.md`,
+`DATABASE.md`, `Backend.md`, `DECISIONS.md`) in place instead of forcing
+lossy merges. Renames preserved content and updated every cross-reference;
+no deletions were needed. Executed under the approval gate: the full plan
+(merges, moves, renames, creations) was presented and approved before any
+file changed.
